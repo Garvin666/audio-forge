@@ -70,6 +70,22 @@ healthcheck 和监控探针用（否则探活要么失败在 401，要么每 30 
 
 ---
 
+## 2.5 反代层的两个坑（真机踩过，已修在 `nginx.conf` 里）
+
+| 坑 | 现象 | 正确写法 |
+| --- | --- | --- |
+| **限流默认回 503** | `limit_req` / `limit_conn` 超限时 nginx 返回 `503 Service Temporarily Unavailable`，与应用层的 429 不一致，运维会误判成「服务挂了」 | 在 http 块显式写 `limit_req_status 429;` 与 `limit_conn_status 429;` |
+| **安全头被 add_header 顶掉** | 只在 server 级写四个安全头、再在某个 location 里加一条 `Referrer-Policy`，该 location 的响应里 `nosniff`、`X-Frame-Options`、`HSTS` **全部消失**（nginx 的 add_header 是「子级有任意一条就不继承父级」） | 每个 location 各写全四个 `add_header`；server 级那份只兜底错误页 |
+
+实测数据（nginx 1.28.3，`deploy/nginx.conf` 原样起服务）：
+
+- 串行 300 次 `/api/ping`：过 200 / 拦 100（`rate=30r/s burst=40`）；串行 120 次时 0 拦 —— 突发额度足够吃下，别把「没触发 429」当成限流没生效。
+- 并发 24 个健康检查：过 8 / 拦 16（`limit_conn 8`）。
+- 声明 300 MB 的 POST：nginx 在读头阶段就回 `413`，不会真的收完 300 MB。
+- 10 MB `.ncm` 经反代上传转 flac 约 0.7–0.8 s，52 MB 下载约 0.6 s，字节一致。
+
+---
+
 ## 3. Linux + systemd 部署
 
 ```bash

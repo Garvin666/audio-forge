@@ -189,6 +189,7 @@ audioforge serve --host 127.0.0.1 --port 8000
 | 容器一直 unhealthy | healthcheck 应打 `/api/ping`（不必带凭证）；若改成打 `/api/health`，配了鉴权就会 401 |
 | 返回 429 且 `error` 提「请求过于频繁」 | 撞了 `--rate`；响应头有 `Retry-After` |
 | 返回 429 且 `error` 提「今日配额已用尽」 | 撞了 `--daily-files` / `--daily-gb`，按需调大 |
+| 返回 429 但 body 是 **HTML**、也没有 `Retry-After` | 撞的是 Nginx 的 `limit_req` / `limit_conn`，不是应用配额。调 `nginx.conf` 的 `rate` / `burst` / `limit_conn`。想分清就看 `Server:` 头，应用不返回它 |
 | 磁盘满但 `--disk-gb` 设了 | 磁盘闸门只在**新请求进来时**触发；也可能超限前就已经写满，需外部监控兜底 |
 | 提示「非 NCM 文件必须指定目标格式」 | 目标格式选了「自动」但有非 `.ncm` 文件，选具体格式 |
 | 下载 404 | 超过 `--ttl` 被清理，或 job 目录被 `--workdir` 改动后找不到 |

@@ -1,0 +1,49 @@
+name: 功能建议
+description: 提一个具体可落地的改进（新增格式、部署方式、接口能力等）
+title: "[feat] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        提之前先看一眼 [README](../blob/main/README.md) 的「设计取舍」与
+        [CHANGELOG](../blob/main/CHANGELOG.md) —— 有些东西是**有意不做**的
+        （换 Flask/FastAPI、引入 pycryptodome、给单机工具上 Redis）。
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: 涉及哪块
+      options:
+        - NCM 解密
+        - 通用转码（ffmpeg 参数 / 格式支持）
+        - Web 平台（界面 / 交互）
+        - HTTP 接口 / 鉴权 / 配额
+        - 部署（Docker / systemd / nginx）
+        - 工程化（测试 / CI / 文档）
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 你遇到的问题
+      description: 说场景，不要说方案。「我每周要转 200 个专辑，现在得一个个点」比「加个批量按钮」有用
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 你希望的解法
+      description: 如果能说清代价更好（多一个依赖？多一个接口？改配置格式？）
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: 约束确认
+      options:
+        - label: 这个建议不要求引入第三方运行时依赖（本项目主线是零依赖；可接受的方案是 optional extra）
+          required: false

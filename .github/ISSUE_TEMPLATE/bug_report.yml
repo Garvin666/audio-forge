@@ -1,0 +1,75 @@
+name: 缺陷报告
+description: 报告一个可复现的问题（解密结果不对、转码失败、服务异常等）
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **安全问题请勿在此提交** —— 走 [SECURITY.md](../blob/main/SECURITY.md) 里的私密通道。
+
+        提交前请先跑一遍自检，多数问题能自己定位：
+        ```bash
+        python -m unittest discover -s tests -t . -v
+        audioforge --version && audioforge formats
+        ```
+
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      description: 输出 `audioforge --version` 的结果
+      placeholder: audio-forge 1.0.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: 运行方式
+      options:
+        - CLI（ncm / convert / probe）
+        - 本地 Web 平台（audioforge serve）
+        - Docker / docker-compose
+        - systemd 服务
+        - 作为库导入
+    validations:
+      required: true
+
+  - type: input
+    id: env
+    attributes:
+      label: 环境
+      description: 操作系统 + Python 版本 + ffmpeg 版本（`ffmpeg -version | head -1`，没装就写「无」）
+      placeholder: Windows 11 / Python 3.13.2 / ffmpeg 7.1
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: 发生了什么
+      description: 期望结果与实际结果；有报错就贴完整回溯（不要只贴最后一行）
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: 复现步骤
+      description: 命令或操作步骤。涉及文件的请说明来源（自己转的？多大？什么格式？）
+      placeholder: |
+        1. audioforge ncm song.ncm -o out
+        2. ...
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 已确认
+      options:
+        - label: 我贴的是完整报错，不是「不行」「用不了」这类描述
+          required: true
+        - label: 我确认这不是因为我传了受版权保护的文件导致的（本项目不提供内容）
+          required: false

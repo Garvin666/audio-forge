@@ -15,9 +15,11 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from audioforge import ncm as ncm_mod  # noqa: E402
 from audioforge.aes import AES128ECB  # noqa: E402
 from audioforge.ncm import (  # noqa: E402
     CORE_KEY,
@@ -27,6 +29,7 @@ from audioforge.ncm import (  # noqa: E402
     META_B64_PREFIX,
     META_KEY,
     NcmError,
+    NcmInfo,
     decrypt,
     guess_format,
     keystream_table,
@@ -221,6 +224,81 @@ class TestDecrypt(unittest.TestCase):
     def test_missing_file(self):
         with self.assertRaises(NcmError):
             decrypt(self.dir / "nope.ncm", self.out)
+
+
+class TestAtomicWrite(unittest.TestCase):
+    """``.part`` + 原子改名：失败不留半截文件（P0-5）。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name)
+
+    def test_no_part_file_left_after_success(self):
+        src = self.dir / "ok.ncm"
+        src.write_bytes(build_ncm(fake_audio(20_000), meta=META))
+        dst, _ = decrypt(src, self.dir)
+        self.assertTrue(dst.is_file())
+        self.assertEqual(sorted(p.name for p in self.dir.glob("*.part")), [])
+
+    def test_failure_removes_part_and_target(self):
+        src = self.dir / "boom.ncm"
+        src.write_bytes(build_ncm(fake_audio(20_000), meta=META))
+
+        def explode(fp, dst, table, size):
+            dst.write(b"\x00" * 512)        # 已经写了一半
+            raise OSError("disk full")
+
+        patched = mock.patch.object(ncm_mod, "_xor_keystream", explode)
+        with patched, self.assertRaises(OSError):
+            decrypt(src, self.dir)
+
+        self.assertFalse((self.dir / "boom.mp3").exists())      # 不能留「看着像成品」的
+        self.assertEqual(list(self.dir.glob("*.part")), [])     # 也不能留临时件
+
+
+class TestSizeCheck(unittest.TestCase):
+    """体积对照是启发式提示，不阻断产出（P0-5）。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name)
+
+    def _decrypt(self, audio: bytes) -> NcmInfo:
+        src = self.dir / "s.ncm"
+        src.write_bytes(build_ncm(audio, meta=META))
+        _, info = decrypt(src, self.dir)
+        return info
+
+    def test_matching_size_is_consistent(self):
+        # META 声明 320 kbps / 12.345 s → 推算约 493 800 字节，给 500 000 落在 0.5–2.0 内
+        info = self._decrypt(fake_audio(500_000))
+        self.assertTrue(info.size_check["consistent"])
+        self.assertTrue(info.summary()["size_consistent"])
+
+    def test_truncated_file_is_flagged_but_still_produced(self):
+        blob = build_ncm(fake_audio(500_000), meta=META)
+        src = self.dir / "cut.ncm"
+        src.write_bytes(blob[: len(blob) - 380_000])       # 尾部被砍掉
+
+        out, info = decrypt(src, self.dir)                  # 不抛错：仍产出
+        self.assertTrue(out.is_file())
+        self.assertFalse(info.size_check["consistent"])
+        self.assertLess(info.size_check["ratio"], 0.5)
+        self.assertFalse(info.summary()["size_consistent"])
+
+    def test_no_metadata_means_no_verdict(self):
+        src = self.dir / "plain.ncm"
+        src.write_bytes(build_ncm(fake_audio(5_000)))
+        _, info = decrypt(src, self.dir)
+        self.assertEqual(info.size_check, {})
+        self.assertIsNone(info.summary()["size_consistent"])
+
+    def test_probe_never_sets_size_check(self):
+        src = self.dir / "p.ncm"
+        src.write_bytes(build_ncm(fake_audio(500_000), meta=META))
+        self.assertEqual(probe(src).size_check, {})
 
 
 class TestGuessFormat(unittest.TestCase):

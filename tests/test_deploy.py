@@ -111,16 +111,44 @@ class TestSystemdUnit(unittest.TestCase):
         self.assertTrue(ns.quiet)
 
     def test_hardening_directives_present(self) -> None:
-        """加固项是这套部署的一半价值，删掉要有人发现。"""
+        """加固项是这套部署的一半价值，删掉要有人发现。
+
+        这 18 条在 systemd 257 上实测过：`systemd-analyze verify` **零输出**，
+        且用同一份加固跑 `audioforge serve` 能正常启动、上传解密、Range 下载。
+        （判据必须是「零输出」——`verify` 对语法错误也返回 0，只看退出码会假绿。）
+        """
         for key in (
+            # 基础防护
             "NoNewPrivileges=yes",
             "PrivateTmp=yes",
+            "PrivateDevices=yes",
             "ProtectSystem=strict",
             "ProtectHome=yes",
-            "RestrictSUIDSGID=yes",
             "ReadWritePaths=/var/lib/audio-forge",
+            "RestrictSUIDSGID=yes",
+            "MemoryMax=2G",
+            # 2026-10 新增：内核面与 capability 面
+            "ProtectKernelLogs=yes",
+            "ProtectClock=yes",
+            "ProtectHostname=yes",
+            "ProtectProc=invisible",
+            "RestrictRealtime=yes",
+            "UMask=0077",
+            "CapabilityBoundingSet=",
+            "AmbientCapabilities=",
+            "RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX",
+            "SystemCallFilter=@system-service",
         ):
             self.assertIn(key, self.text, f"缺少加固项 {key}")
+
+    def test_syscall_filter_has_error_number(self) -> None:
+        # 没有它，被拦的系统调用会直接 SIGSYS 杀进程，日志里只剩
+        # "Main process exited, code=killed, status=31/SYS" —— 完全看不出原因
+        self.assertIn("SystemCallErrorNumber=EPERM", self.text)
+
+    def test_umask_tightens_created_files(self) -> None:
+        # 实测：加了 UMask=0077 后，服务落盘的上传件与产物都是 600
+        self.assertIn("UMask=0077", self.text)
 
     def test_no_credential_on_command_line(self) -> None:
         """口令不许出现在 ExecStart（ps 可见）。"""
@@ -159,6 +187,14 @@ MISSING_ON_219 = (
     "ReadWritePaths",     # 219 只认旧名 ReadWriteDirectories
     "MemoryMax",          # 219 只认旧名 MemoryLimit
     "ProtectSystem=strict",  # strict 取值 232 才有，219 只认 yes/no/full
+    # 2026-10 主单元新增的几条，在 219 上同样不存在：
+    "ProtectKernelLogs",     # 244
+    "ProtectClock",          # 245
+    "ProtectHostname",       # 242
+    "ProtectProc",           # 247
+    "RestrictRealtime",      # 231
+    "AmbientCapabilities",   # 229
+    "SystemCallErrorNumber",  # 232
 )
 
 

@@ -15,21 +15,32 @@
 
 静态资源（``/``、``/app.js``、``/style.css``）**不鉴权**：它们不含数据，且 Bearer 模式下
 页面必须先加载出来，JS 才有机会从 ``?token=`` 里取出令牌。
+
+2026-10-26 的三处修正：
+
+* ``_buckets`` 原本只增不减（每个新 IP 一条，公网扫描器可撑爆内存）→ 定期淘汰 + 硬上限；
+* ``disk_usage_mb()`` 原本每次 ``rglob`` 全盘扫（health 在 601 个 job 时要 679 ms）→
+  增量计数 + 30 s 兜底重扫；
+* ``ensure_disk()`` 原本无锁、且删一个目录就再扫一次该目录（O(n²)）→ 加锁 + 单趟扫描。
 """
 
 from __future__ import annotations
 
 import base64
 import hmac
+import shutil
 import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 __all__ = ["Denied", "Limits", "Guard"]
 
 MINUTE = 60.0
 DAY = 86400.0
+PRUNE_EVERY = 60.0
+MAX_BUCKETS = 100_000
 
 
 class Denied(Exception):
@@ -52,7 +63,7 @@ class Limits:
     disk_mb: int = 20 * 1024       # jobs 目录总量上限（MiB），超了先清最旧
 
     @classmethod
-    def unlimited(cls) -> "Limits":
+    def unlimited(cls) -> Limits:
         return cls(0, 0, 0, 0)
 
     def as_dict(self) -> dict:
@@ -74,6 +85,9 @@ class _Bucket:
     day_files: int = 0
     day_bytes: int = 0
 
+    def expired(self, now: float) -> bool:
+        return now - self.day_start >= DAY and now - self.minute_start >= MINUTE
+
 
 @dataclass
 class Guard:
@@ -82,10 +96,14 @@ class Guard:
     token: str | None = None
     limits: Limits = field(default_factory=Limits)
     jobs_dir: Path | None = None
-    clock: object = time.time          # 测试注入
+    clock: Callable[[], float] = time.time          # 测试注入
+    max_buckets: int = MAX_BUCKETS
+    prune_every: float = PRUNE_EVERY
     _buckets: dict = field(default_factory=dict, repr=False)
-    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
-    last_prune: int = 0
+    _lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
+    last_prune: float = 0.0
+    _disk_bytes: int | None = field(default=None, repr=False)
+    _disk_at: float = field(default=0.0, repr=False)
 
     # ---------------------------------------------------------------- #
     # 鉴权
@@ -115,7 +133,7 @@ class Guard:
         return {}
 
     def _check_basic(self, header: str) -> bool:
-        if not self.has_basic or not header[:6].lower() == "basic ":
+        if not self.has_basic or header[:6].lower() != "basic ":
             return False
         try:
             raw = base64.b64decode(header[6:].strip(), validate=True).decode("utf-8")
@@ -154,17 +172,39 @@ class Guard:
     def _bucket(self, ip: str) -> _Bucket:
         b = self._buckets.get(ip)
         if b is None:
-            now = self.clock()  # type: ignore[operator]
+            now = self.clock()
             b = _Bucket(minute_start=now, day_start=now)
             self._buckets[ip] = b
         return b
+
+    def _prune_locked(self, now: float) -> None:
+        """淘汰完全过期的桶；仍超额就按分钟窗口起点从旧到新丢。
+
+        不淘汰的话，公网扫描器每个新 IP 都会留下一条 ``_Bucket``，
+        内存只增不减（原实现的 ``last_prune`` 字段是个从没被读过的死字段）。
+        """
+        self.last_prune = now
+        if self._buckets:
+            dead = [ip for ip, b in self._buckets.items() if b.expired(now)]
+            for ip in dead:
+                self._buckets.pop(ip, None)
+        overflow = len(self._buckets) - self.max_buckets
+        if overflow > 0:
+            ordered = sorted(self._buckets.items(), key=lambda kv: kv[1].minute_start)
+            for ip, _ in ordered[:overflow]:
+                self._buckets.pop(ip, None)
+
+    def _maybe_prune_locked(self, now: float) -> None:
+        if now - self.last_prune >= self.prune_every or len(self._buckets) > self.max_buckets:
+            self._prune_locked(now)
 
     def check_rate(self, ip: str) -> None:
         limit = self.limits.per_minute
         if limit <= 0:
             return
-        now = self.clock()  # type: ignore[operator]
+        now = self.clock()
         with self._lock:
+            self._maybe_prune_locked(now)
             b = self._bucket(ip)
             if now - b.minute_start >= MINUTE:
                 b.minute_start, b.minute_count = now, 0
@@ -178,7 +218,7 @@ class Guard:
         limits = self.limits
         if limits.files_per_day <= 0 and limits.mb_per_day <= 0:
             return
-        now = self.clock()  # type: ignore[operator]
+        now = self.clock()
         with self._lock:
             b = self._bucket(ip)
             if now - b.day_start >= DAY:
@@ -205,13 +245,18 @@ class Guard:
             "requests_this_minute": b.minute_count,
         }
 
+    def bucket_count(self) -> int:
+        """当前记账的 IP 数（测试与运维排查用）。"""
+        with self._lock:
+            return len(self._buckets)
+
     # ---------------------------------------------------------------- #
     # 磁盘
     # ---------------------------------------------------------------- #
 
-    def disk_usage_mb(self) -> float:
+    def _scan_disk_bytes(self) -> int:
         if not self.jobs_dir or not self.jobs_dir.is_dir():
-            return 0.0
+            return 0
         total = 0
         for path in self.jobs_dir.rglob("*"):
             try:
@@ -219,34 +264,65 @@ class Guard:
                     total += path.stat().st_size
             except OSError:
                 continue
-        return total / (1 << 20)
+        return total
 
-    def ensure_disk(self) -> int:
+    def _disk_bytes_locked(self, max_age: float) -> int:
+        now = self.clock()
+        if self._disk_bytes is None or (now - self._disk_at) > max_age:
+            self._disk_bytes = self._scan_disk_bytes()
+            self._disk_at = now
+        return self._disk_bytes
+
+    def disk_usage_mb(self, *, max_age: float = 30.0) -> float:
+        with self._lock:
+            return self._disk_bytes_locked(max_age) / (1 << 20)
+
+    def note_disk(self, delta: int) -> None:
+        """上传/清理后微调用量，避免每次都重扫目录。"""
+        with self._lock:
+            if self._disk_bytes is not None:
+                self._disk_bytes = max(0, self._disk_bytes + delta)
+                self._disk_at = self.clock()
+
+    def invalidate_disk(self) -> None:
+        with self._lock:
+            self._disk_bytes = None
+
+    def ensure_disk(self) -> float:
         """超过磁盘上限时按 mtime 从旧到新删 job 目录，返回释放的 MiB。"""
         cap = self.limits.disk_mb
         if cap <= 0 or not self.jobs_dir or not self.jobs_dir.is_dir():
-            return 0
-        used = self.disk_usage_mb()
-        if used <= cap:
-            return 0
+            return 0.0
+        with self._lock:
+            used = self._disk_bytes_locked(30.0)
+            cap_bytes = cap * (1 << 20)
+            if used <= cap_bytes:
+                return 0.0
 
-        import shutil
-
-        freed = 0.0
-        jobs = []
-        for d in self.jobs_dir.iterdir():
-            if not d.is_dir():
-                continue
             try:
-                jobs.append((d.stat().st_mtime, d))
+                entries = list(self.jobs_dir.iterdir())
             except OSError:
-                continue
-        jobs.sort()
-        target = cap * 0.8                     # 留 20% 余量，避免每来一个请求就清一次
-        for _, d in jobs:
-            if used - freed <= target:
-                break
-            size = sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
-            shutil.rmtree(d, ignore_errors=True)
-            freed += size / (1 << 20)
-        return round(freed, 2)
+                return 0.0
+
+            # 单趟扫描：每个目录只算一次大小（旧实现删一个再扫一个，是 O(n²)）
+            jobs: list[tuple[float, int, Path]] = []
+            for entry in entries:
+                try:
+                    if not entry.is_dir():
+                        continue
+                    size = sum(f.stat().st_size for f in entry.rglob("*") if f.is_file())
+                    jobs.append((entry.stat().st_mtime, size, entry))
+                except OSError:
+                    continue
+
+            jobs.sort(key=lambda item: item[0])
+            target = cap_bytes * 0.8             # 留 20% 余量，避免每来一个请求就清一次
+            freed = 0
+            for _, size, entry in jobs:
+                if used - freed <= target:
+                    break
+                shutil.rmtree(entry, ignore_errors=True)
+                freed += size
+            self._disk_bytes = max(0, used - freed)
+            self._disk_at = self.clock()
+            return round(freed / (1 << 20), 2)

@@ -13,8 +13,29 @@ services:
       # 都不设则不启用，只适合本机回环使用。
       - AUDIOFORGE_AUTH=${AUDIOFORGE_AUTH:-}
       - AUDIOFORGE_TOKEN=${AUDIOFORGE_TOKEN:-}
+      # 放在反代后面才开（只接受来自 AUDIOFORGE_TRUSTED_PROXY 的 XFF）
+      - AUDIOFORGE_TRUST_PROXY=${AUDIOFORGE_TRUST_PROXY:-}
+      - AUDIOFORGE_TRUSTED_PROXY=${AUDIOFORGE_TRUSTED_PROXY:-}
+      - AUDIOFORGE_MAX_OUT_MB=${AUDIOFORGE_MAX_OUT_MB:-2048}
+
+    # ---- 加固：与 deploy/audio-forge.service 的加固项对齐 ----
+    # 容器只写 /data（结果）与 /tmp（Python 临时文件），根文件系统可以整个只读。
+    # 下面这几条已在 Docker 上实测（旧镜像 + 全套参数）：上传、解密、下载全通，
+    # `touch /nope` 回 "Read-only file system"，`/tmp` 可写。
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 2g
+    stop_grace_period: 15s
+
     healthcheck:
-      # 探活走 /api/ping：它不校验凭证、不计限速，配了 AUDIOFORGE_AUTH 也能用
+      # 探活走 /api/ping：它不校验凭证、不计限速，配了 AUDIOFORGE_AUTH 也能用。
+      # 想把「卷掉了/目录没了」也算不健康，改用 /api/ready（不可用时回 503）。
       test: ["CMD", "python", "-c",
              "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/api/ping',timeout=3)"]
       interval: 30s
@@ -22,3 +43,11 @@ services:
       retries: 3
       start_period: 10s
     restart: unless-stopped
+
+# 说明：
+# 1. `./data` 由 Docker 创建时属 root，宿主机上的普通用户可能删不掉里面文件；
+#    要避免就自己 `mkdir -p data && sudo chown 0:0 data` 或改用命名卷。
+# 2. `mem_limit` 在 `docker compose`（非 swarm）下有效；swarm 请用
+#    `deploy.resources.limits.memory`。
+# 3. 不要把 `cap_drop: ALL` 换成 `--privileged`：本项目不需要任何 capability，
+#    实测去掉 DAC_OVERRIDE 也能正常写 /data（卷由容器内 root 持有）。

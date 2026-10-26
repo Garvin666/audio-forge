@@ -169,6 +169,38 @@ class TestQuota(unittest.TestCase):
                          {"per_minute": 0, "files_per_day": 0, "mb_per_day": 0, "disk_mb": 0})
 
 
+class TestBucketReclaim(unittest.TestCase):
+    """``_buckets`` 必须有界（P1-2）—— 否则公网扫描器每个新 IP 留一条，内存只增不减。"""
+
+    def test_expired_buckets_are_dropped(self):
+        g, clock = make(limits=Limits(per_minute=10), prune_every=0)
+        for i in range(5):
+            g.check_rate(f"10.0.0.{i}")
+        self.assertEqual(g.bucket_count(), 5)
+        clock.advance(86401)
+        g.check_rate("10.0.0.9")
+        self.assertEqual(g.bucket_count(), 1)        # 过期桶全清，只剩刚访问的
+
+    def test_prune_is_throttled(self):
+        # 每次请求都全表扫一遍也是浪费：prune_every 内的第二次调用不该动表
+        g, clock = make(limits=Limits(per_minute=10), prune_every=60)
+        g.check_rate("a")
+        first = g.last_prune
+        clock.advance(10)
+        g.check_rate("b")
+        self.assertEqual(g.last_prune, first)
+        clock.advance(60)
+        g.check_rate("c")
+        self.assertGreater(g.last_prune, first)
+
+    def test_hard_cap_does_not_grow(self):
+        g, _ = make(limits=Limits(per_minute=10), max_buckets=3, prune_every=1e9)
+        for i in range(200):
+            g.check_rate(f"10.1.0.{i}")
+        # 允许超出一条（先插入再在下次调用时削），但不会随请求数线性增长
+        self.assertLessEqual(g.bucket_count(), g.max_buckets + 1)
+
+
 class TestDisk(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -214,6 +246,71 @@ class TestDisk(unittest.TestCase):
         g, _ = make(limits=Limits(disk_mb=0), jobs_dir=self.jobs)
         self.assertEqual(g.ensure_disk(), 0)
         self.assertTrue((self.jobs / "a").exists())
+
+
+class TestDiskCounter(unittest.TestCase):
+    """用量走增量计数，只 30 s 兜底重扫一次（P1-1 / P1-3）。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.jobs = Path(self.tmp.name) / "jobs"
+        self.jobs.mkdir()
+        (self.jobs / "seed.bin").write_bytes(b"x" * (2 << 20))
+        self.guard, self.clock = make(limits=Limits(disk_mb=100), jobs_dir=self.jobs)
+
+    def test_scan_then_cached(self):
+        self.assertAlmostEqual(self.guard.disk_usage_mb(), 2.0, places=1)
+        (self.jobs / "late.bin").write_bytes(b"x" * (1 << 20))
+        self.assertAlmostEqual(self.guard.disk_usage_mb(), 2.0, places=1)   # 仍在缓存期
+        self.clock.advance(31)
+        self.assertAlmostEqual(self.guard.disk_usage_mb(), 3.0, places=1)   # 兜底重扫
+
+    def test_note_disk_adjusts_without_rescan(self):
+        self.guard.disk_usage_mb()                      # 建立基线
+        self.guard.note_disk(1 << 20)
+        self.assertAlmostEqual(self.guard.disk_usage_mb(), 3.0, places=1)
+        self.guard.note_disk(-(1 << 20))
+        self.assertAlmostEqual(self.guard.disk_usage_mb(), 2.0, places=1)
+
+    def test_note_disk_without_baseline_is_noop(self):
+        # 还没扫过就别凭 delta 编一个数出来
+        self.guard.note_disk(5 << 20)
+        self.assertAlmostEqual(self.guard.disk_usage_mb(), 2.0, places=1)
+
+    def test_never_goes_negative(self):
+        self.guard.disk_usage_mb()
+        self.guard.note_disk(-(10 << 20))
+        self.assertEqual(self.guard.disk_usage_mb(), 0.0)
+
+    def test_invalidate_forces_rescan(self):
+        self.guard.disk_usage_mb()
+        (self.jobs / "late.bin").write_bytes(b"x" * (1 << 20))
+        self.guard.invalidate_disk()
+        self.assertAlmostEqual(self.guard.disk_usage_mb(), 3.0, places=1)
+
+    def test_ensure_disk_updates_counter(self):
+        import os
+        import time
+
+        for i, name in enumerate(("j1", "j2", "j3")):
+            d = self.jobs / name
+            d.mkdir()
+            (d / "b.bin").write_bytes(b"x" * (2 << 20))
+            stamp = time.time() - 100 + i
+            os.utime(d, (stamp, stamp))
+
+        tight, _ = make(limits=Limits(disk_mb=5), jobs_dir=self.jobs)
+        self.assertAlmostEqual(tight.disk_usage_mb(), 8.0, places=1)
+        freed = tight.ensure_disk()
+        self.assertGreater(freed, 0)
+        # 删完立刻能看到新用量，不必等 30 s 重扫
+        self.assertLessEqual(tight.disk_usage_mb(), 5.0)
+
+    def test_missing_jobs_dir_reads_zero(self):
+        g, _ = make(limits=Limits(disk_mb=10), jobs_dir=self.jobs / "nope")
+        self.assertEqual(g.disk_usage_mb(), 0.0)
+        self.assertEqual(g.ensure_disk(), 0)
 
 
 if __name__ == "__main__":

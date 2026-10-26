@@ -87,7 +87,9 @@ journalctl -u audio-forge -f
 > [`deploy/audio-forge.service`](../deploy/audio-forge.service)，配套的安装、自检与实测数据见
 > [`deploy/README.md`](../deploy/README.md) §3。
 >
-> **版本要求**：加固版需要 **systemd ≥ 242**（卡在 `RestrictSUIDSGID=`）。
+> **版本要求**：加固版需要 **systemd ≥ 242**（卡在 `RestrictSUIDSGID=`）；
+> `ProtectProc=invisible` 要 247，更老的版本会忽略它并打印一条 `Unknown key name` 告警，
+> 其余加固照常生效。判据用 `test -z "$(systemd-analyze verify …)"`，别看退出码。
 > 更老的系统（CentOS 7 是 219）改用 [`deploy/audio-forge.service.rhel7`](../deploy/audio-forge.service.rhel7)，
 > 逐条的版本对照与实测依据见 [`deploy/README.md`](../deploy/README.md) §3.4。
 
@@ -126,6 +128,10 @@ docker compose logs -f
 要点：
 
 - **镜像里已经装了 ffmpeg**，`/api/health` 应该返回 `transcode: true`。
+- 基础镜像是 `python:3.12-alpine`：本项目运行时零第三方依赖、全是纯 Python，镜像里唯一的
+  原生二进制是 ffmpeg 本身，由 apk 提供并与 musl 配套编译，没有 ABI 风险。
+  ⚠️ 副作用：`imageio-ffmpeg` 随包那份 glibc 静态二进制在 musl 下跑不起来 —— 本项目不装它，
+  且 `find_ffmpeg()` 先查 PATH 再回落到它，所以无影响；自行加装时留意这一点。
 - `docker-compose.yml` 的 healthcheck 打的是 `/api/ping`（无凭证、不计限速），
   所以开了 `AUDIOFORGE_AUTH` 也不会被判 unhealthy。鉴权变量从 `.env` 注入，
   见 `deploy/env.example`。
@@ -138,36 +144,55 @@ docker compose logs -f
 
 不是「照文档写一遍」，是真的构建、起容器、跑真文件验过的：
 
-| 项 | 实测值 |
-| --- | --- |
-| 构建（含 apt 装 ffmpeg） | 3 分 49 秒，全量约 130 MB 依赖 |
-| 构建（改代码重建，走缓存） | 6.2 秒 |
-| 镜像大小 | 832 MB（其中 ffmpeg 依赖的系统库约 449 MB，应用本体仅 484 KB） |
-| 容器常驻内存 | 17 MB |
-| healthcheck | 启动后第 2 次探询转 `healthy`，`/api/ping` 返回 200 |
-| 真文件转换 | 10.0 MB `.ncm` → 9 841 292 B mp3，与真机直解**逐字节一致**（`cmp` 无差异） |
-| 通用转码 | mp3 → flac，1.38 秒，`ffprobe` 验为 48 kHz 双声道 245.952 s |
-| 卷持久化 | 重启容器后旧任务仍可下载，sha256 不变 |
-| 超限 | 205 MB 上传 → **5 ms** 内返回 413（未读 body 即拒），服务不受影响 |
+| 项 | 实测值（alpine 版） | 旧 debian 版 |
+| --- | --- | --- |
+| 镜像大小 | **279 MB** | 832 MB |
+| 构建（含 apk 装 ffmpeg） | 2 分 55 秒，其中 ffmpeg 层 157 秒 | 3 分 49 秒 |
+| 构建（改代码重建，走缓存） | 12 秒 | 6.2 秒 |
+| 容器常驻内存 | 17 MB | 17 MB |
+| 镜像内 ffmpeg | 8.1.3（含 libmp3lame / flac / aac） | 5.1.x |
+| 真文件解密 | 200 349 B `.ncm` → 200 000 B mp3，与真机直解**逐字节一致**（`cmp` 无差异） | 10 MB `.ncm` → 9 841 292 B，同样一致 |
+| 通用转码 | mp3（33 062 B）→ flac（110 811 B），`ffprobe` 验为 44.1 kHz 单声道 | mp3 → flac，1.38 秒，48 kHz 双声道 |
+| 加固后能否工作 | `--read-only --tmpfs /tmp --cap-drop ALL --no-new-privileges` 下 ping/ready/health、上传、解密、下载、转码全通；`touch /` 回 `Read-only file system` | 同 |
+| Range | `bytes=0-99` → 206 + `Content-Length: 100`；`HEAD` → 200 + 全长；越界 → 416 + `Content-Range: bytes */110811` | 同 |
 
-### 2.2 构建卡在 apt 时怎么处理
+**为什么停在 279 MB 而不是更小**：alpine 的 `ffmpeg-libs` 是单体包，135 MB 里
+`libx265` 21 MB、`libavcodec` 20 MB、`libaom`/`libSvtAv1Enc`/`libjxl` 等各占几 MB，
+都是 `ffmpeg` 的硬依赖，删掉任何一个 `ffmpeg` 都直接起不来（`DT_NEEDED` 缺符号）。
+再往下只有两条路，都不划算：换静态精简 ffmpeg（省 ~40 MB，但要么依赖第三方二进制源、
+要么自己编，版本不可复现）；或在生产镜像里不装 pip（省 ~14 MB，但容器里就再也不能
+`pip install`）。另外 `docker images` 报的 279 MB 里约有 80 MB 是基础层被 apk 覆盖掉的旧
+`musl`/`openssl` —— 那是层语义决定的，构建时删不掉。
 
-一次 ffmpeg 要拉 ~110 个包 / ~130 MB，任何一个包失败整层就废掉。`Dockerfile` 里已经做了
-`Acquire::Retries=8` + 5 次外层循环 + 已下好的 `.deb` 复用，正常情况下能自己扛过抖动。
+### 2.2 构建卡在 apk 下载时怎么处理
 
-如果仍反复失败：
+一次 ffmpeg 要拉 ~50 个包 / 135 MB，任何一个包失败整层就废掉。`Dockerfile` 里已经做了
+5 次外层循环重试 + 装完真的跑一次 `ffmpeg -version` 做断言。
+
+如果仍反复失败（典型表现：卡在 `apk add ffmpeg` 十几分钟不动）：
 
 ```bash
-# 换国内源（Dockerfile 已内置该参数，改源比反复重试有效）
-docker build --build-arg APT_MIRROR=mirrors.aliyun.com -t audio-forge .
+# 换国内源（Dockerfile 已内置这两个参数，改源比反复重试有效）
+docker build --build-arg APK_MIRROR=mirrors.aliyun.com \
+             --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
+             -t audio-forge .
 
 # 别把本机代理硬塞进构建：容器到宿主的代理链路常常是 502 的来源
 # 实测「不带任何 --build-arg HTTP_PROXY」的直连比走代理稳
 ```
 
+实测速度（本机、容器内）：`dl-cdn.alpinelinux.org` 约 60 KB/s，`mirrors.aliyun.com`
+不到 1 秒下完同一个索引文件；`pypi.org` 在容器里直接 `Connection refused`，
+`pypi.tuna.tsinghua.edu.cn` 正常。也就是说国内网络下这两个 build-arg 基本是必需的 ——
+不加会卡在下载，不是失败，是慢到看起来像卡死。
+
 > 踩过的坑：`--build-arg HTTP_PROXY=http://127.0.0.1:xxxx` 里的 `127.0.0.1` 指的是**容器自己**，
 > 不是宿主机，会得到 `Connection refused`；要指向宿主得用 `http://http.docker.internal:3128`
 > （仅 Docker Desktop）。而这条链路在批量下载时容易回 502 —— 直连反而更稳。
+
+> 另一个坑：Docker Hub 直连在本机是超时的（`dial tcp …:443` 无响应）。拉基础镜像走
+> 镜像站即可：`docker pull docker.m.daocloud.io/library/python:3.12-alpine`，再
+> `docker tag` 成本地 `python:3.12-alpine`，`Dockerfile` 不用改。
 
 ---
 
@@ -202,7 +227,7 @@ audioforge serve --host 127.0.0.1 --port 8000
 | 文件 | 用途 |
 | --- | --- |
 | `deploy/nginx.conf` | TLS + `limit_req`（30 r/s）+ `client_max_body_size` + 900s 超时 + 安全头 |
-| `deploy/audio-forge.service` | systemd 单元（≥ 242），含 `ProtectSystem=strict`、`PrivateTmp` 等加固 |
+| `deploy/audio-forge.service` | systemd 单元（≥ 242，零警告需 247），含 `ProtectSystem=strict`、`SystemCallFilter=@system-service`、`CapabilityBoundingSet=` 等加固 |
 | `deploy/audio-forge.service.rhel7` | 老 systemd 降级版（< 242，如 CentOS 7 的 219） |
 | `deploy/env.example` | 口令/令牌模板，放 `/etc/audio-forge/env` 并 `chmod 600` |
 | `deploy/README.md` | 三种鉴权模式、配额取舍、自检 curl 清单、常见问题 |
@@ -223,7 +248,7 @@ audioforge serve --host 127.0.0.1 --port 8000
 | 日志 | 用 `--quiet` 关应用访问日志（反代已有）；异常栈仍会进 journald |
 | 出网 | 进程不需要任何出网权限，防火墙可以直接禁掉 |
 | 内容合规 | 不要做成公开的「音乐下载站」，见 README 的合规段落 |
-| 真实 IP | 应用记的是直连地址（反代后恒为 127.0.0.1）。要做按 `X-Forwarded-For` 分桶，必须配可信代理白名单，否则等于让人随便伪造 IP —— 本项目故意没做 |
+| 真实 IP | 放在反代后面**必须**加 `--trust-proxy`，否则所有请求的来源都是反代地址，`--rate` / `--daily-*` 退化成「所有人共用一个桶」。只接受来自 `--trusted-proxy`（默认 `127.0.0.1,::1`，可按 CIDR 写）的 `X-Forwarded-For` / `X-Real-IP`；裸奔时别开，否则等于让人自造 IP |
 
 ## 4. 故障排查
 
@@ -233,7 +258,7 @@ audioforge serve --host 127.0.0.1 --port 8000
 | 页面能开但按钮一直灰 | `/api/health` 失败 → 前端拿不到能力列表；看浏览器 console |
 | 上传到 100% 后报 413 | 请求超过 `--max-mb`，同时检查反代的 `client_max_body_size` |
 | `/api/health` 返回 401 | 已启用鉴权。带 `-H "Authorization: Bearer <令牌>"`，或 `-u 用户:口令` |
-| 容器一直 unhealthy | healthcheck 应打 `/api/ping`（不必带凭证）；若改成打 `/api/health`，配了鉴权就会 401 |
+| 容器一直 unhealthy | healthcheck 应打 `/api/ping`（不必带凭证）；若改成打 `/api/health`，配了鉴权就会 401。想让「卷掉了」也算不健康，改用 `/api/ready`（工作目录不可用时回 503） |
 | 返回 429 且 `error` 提「请求过于频繁」 | 撞了 `--rate`；响应头有 `Retry-After` |
 | 返回 429 且 `error` 提「今日配额已用尽」 | 撞了 `--daily-files` / `--daily-gb`，按需调大 |
 | 返回 429 但 body 是 **HTML**、也没有 `Retry-After` | 撞的是 Nginx 的 `limit_req` / `limit_conn`，不是应用配额。调 `nginx.conf` 的 `rate` / `burst` / `limit_conn`。想分清就看 `Server:` 头，应用不返回它 |
@@ -241,7 +266,7 @@ audioforge serve --host 127.0.0.1 --port 8000
 | 提示「非 NCM 文件必须指定目标格式」 | 目标格式选了「自动」但有非 `.ncm` 文件，选具体格式 |
 | 下载 404 | 超过 `--ttl` 被清理，或 job 目录被 `--workdir` 改动后找不到 |
 | 转码报 `ffmpeg 转码失败` | 响应 `error` 字段里有 ffmpeg stderr 的最后三行，通常是输入编码不被支持 |
-| Docker 里 `transcode: false` | 镜像构建时 apt 装 ffmpeg 失败，`docker run --rm audio-forge ffmpeg -version` 验一下 |
+| Docker 里 `transcode: false` | 镜像构建时 apk 装 ffmpeg 失败（构建日志里 `apk: ffmpeg 报成功但跑不起来` 或整层失败），`docker run --rm audio-forge ffmpeg -version` 验一下；国内网络记得传 `APK_MIRROR` |
 | 内存持续上涨 | 正常路径下不会；检查是否有超大单文件 + 极低 `--max-mb` 组合导致反复重试 |
 | 中文文件名下载变乱码 | 服务端用 RFC 5987 `filename*=UTF-8''…`，老浏览器可能不认，换现代浏览器 |
 

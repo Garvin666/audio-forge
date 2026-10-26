@@ -35,6 +35,12 @@ Restart=on-failure
 RestartSec=3
 
 # --- 加固 ---
+# 版本前提：本单元用到 RestrictSUIDSGID=（242）、ProtectProc=（247）、
+# ProtectClock=（245）、ProtectKernelLogs=（244）、ProtectHostname=（242）。
+# 因此 systemd ≥ 247 才完整体检通过；242–246 会被 systemd 忽略未知项（只告警）；
+# < 242 请改用 deploy/audio-forge.service.rhel7，并在目标机上跑
+#   systemd-analyze verify deploy/audio-forge.service
+# 判据是**零输出**——`systemd-analyze verify` 对语法错误也返回 0，只看退出码会假绿。
 NoNewPrivileges=yes
 PrivateTmp=yes
 PrivateDevices=yes
@@ -42,12 +48,31 @@ ProtectSystem=strict
 ProtectHome=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
+ProtectKernelLogs=yes
 ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
 RestrictSUIDSGID=yes
 RestrictNamespaces=yes
+RestrictRealtime=yes
 LockPersonality=yes
 MemoryMax=2G
 TasksMax=128
+UMask=0077
+
+# 这个服务不需要任何 capability：端口 8000 在非特权区间，文件由 User= 自己的身份读写
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# 只用到 TCP/UDP(监听回环) 与 AF_UNIX；不给 AF_NETLINK / AF_PACKET 留口子
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+
+# 只放行 systemd 预置的「普通服务」白名单（212 起可用）。
+# 注意 syscall 过滤比路径更狠：写错会让服务启动即 EPERM，改完务必本机跑一遍。
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
 
 # 只有结果目录可写（PrivateTmp 会重定向 /tmp，但 --workdir 显式指到了 /var/lib）
 ReadWritePaths=/var/lib/audio-forge

@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 安全漏洞
+    url: https://github.com/Garvin666/audio-forge/security/advisories/new
+    about: 请走私密通道，不要开公开 issue；详见 SECURITY.md
+  - name: 部署问题排查
+    url: https://github.com/Garvin666/audio-forge/blob/main/docs/DEPLOY.md
+    about: 端口占用、反代、systemd 版本要求、容器卷权限等先看部署文档

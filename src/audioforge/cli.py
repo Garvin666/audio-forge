@@ -6,14 +6,23 @@ import argparse
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 from . import __version__, ncm, transcode
 from .guard import Limits
+from .httpd.config import DEFAULT_TRUSTED_PROXIES
 from .server import ServerConfig, serve
 
 __all__ = ["main"]
 
-_FFMPEG_OPT = dict(
+_TRUTHY = {"1", "true", "yes", "on"}
+
+
+def _env_flag(name: str) -> bool:
+    return (os.environ.get(name) or "").strip().lower() in _TRUTHY
+
+
+_FFMPEG_OPT: dict[str, Any] = dict(
     dest="ffmpeg", default=argparse.SUPPRESS, metavar="路径",
     help="显式指定 ffmpeg 可执行文件（也可用顶层 --ffmpeg 或环境变量 AUDIOFORGE_FFMPEG）",
 )
@@ -69,6 +78,11 @@ def cmd_ncm(args: argparse.Namespace) -> int:
                 )
                 line += f"  → {path.name}"
             print(line)
+            check = info.size_check or {}
+            if check and not check.get("consistent", True):
+                print(f"[WARN] {src.name}: 解出 {check['actual_bytes']} 字节，按元数据推算约 "
+                      f"{check['expected_bytes']} 字节 —— 文件可能被截断，建议核对原文件",
+                      file=sys.stderr)
             ok += 1
         except Exception as exc:  # noqa: BLE001
             print(f"[FAIL] {src.name}: {type(exc).__name__}: {exc}", file=sys.stderr)
@@ -92,7 +106,9 @@ def cmd_convert(args: argparse.Namespace) -> int:
                 src, out_dir, args.format, quality=args.quality,
                 bitrate=args.bitrate, ffmpeg=args.ffmpeg,
             )
-            layer = transcode.quality_label(transcode.FORMATS[args.format], args.quality, args.bitrate)
+            layer = transcode.quality_label(
+                transcode.FORMATS[args.format], args.quality, args.bitrate
+            )
             print(f"[OK] {src.name} → {path.name}  {_fmt_size(path.stat().st_size)}  {layer}")
             ok += 1
         except Exception as exc:  # noqa: BLE001
@@ -147,9 +163,19 @@ def cmd_serve(args: argparse.Namespace) -> int:
             return 2
     token = args.token or os.environ.get("AUDIOFORGE_TOKEN") or None
 
+    trust_proxy = args.trust_proxy or _env_flag("AUDIOFORGE_TRUST_PROXY")
+    raw_proxies = args.trusted_proxy or os.environ.get("AUDIOFORGE_TRUSTED_PROXY") or ""
+    trusted = tuple(x.strip() for x in raw_proxies.split(",") if x.strip())
+    if trust_proxy and not trusted:
+        trusted = DEFAULT_TRUSTED_PROXIES
+
     if args.host not in ("127.0.0.1", "localhost", "::1") and not (user or token):
         print("警告：正在对非本机地址开放，但没有启用任何鉴权。"
               "任何能访问该端口的人都能上传并读回结果。", file=sys.stderr)
+
+    max_out_mb = args.max_out_mb
+    if max_out_mb is None:
+        max_out_mb = float(os.environ.get("AUDIOFORGE_MAX_OUT_MB") or 2048)
 
     cfg = ServerConfig(
         host=args.host,
@@ -157,11 +183,17 @@ def cmd_serve(args: argparse.Namespace) -> int:
         max_bytes=int(args.max_mb * (1 << 20)),
         ttl=args.ttl,
         work_dir=Path(args.workdir) if args.workdir else None,
+        concurrency=args.concurrency,
+        download_slots=args.download_slots,
+        conn_timeout=args.conn_timeout,
+        max_out_mb=int(max_out_mb),
         ffmpeg=args.ffmpeg,
         quiet=args.quiet,
         auth_user=user,
         auth_pass=password,
         access_token=token,
+        trust_proxy=trust_proxy,
+        trusted_proxies=trusted,
         limits=limits,
     )
     return serve(cfg)
@@ -216,7 +248,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--ffmpeg", default=None, help="显式指定 ffmpeg 可执行文件路径")
     sub = ap.add_subparsers(dest="cmd", metavar="<命令>")
 
-    common_out = dict(metavar="目录", help="输出目录，默认与源文件同目录")
+    common_out: dict[str, Any] = dict(metavar="目录", help="输出目录，默认与源文件同目录")
 
     p = sub.add_parser("ncm", help="把 .ncm 还原成 mp3/flac")
     p.add_argument("input", nargs="+", help=".ncm 文件或目录")
@@ -263,7 +295,21 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--daily-files", type=int, default=2000, help="每 IP 每日文件数上限，0 表示不限")
     p.add_argument("--daily-gb", type=float, default=20.0, help="每 IP 每日上传总量上限（GB），0 表示不限")
     p.add_argument("--disk-gb", type=float, default=20.0, help="结果目录总量上限（GB），0 表示不限")
+    p.add_argument("--max-out-mb", type=float, default=None,
+                   help="单个产物体积上限（MB），默认 2048，0 表示不限；"
+                        "也可用环境变量 AUDIOFORGE_MAX_OUT_MB")
     p.add_argument("--no-limits", action="store_true", help="关闭全部速率与配额限制")
+    p.add_argument("--concurrency", type=int, default=4, help="同时转换的请求数，默认 4")
+    p.add_argument("--download-slots", type=int, default=0,
+                   help="同时下载的文件数，0 表示按并发数自动（至少 8）")
+    p.add_argument("--conn-timeout", type=int, default=60,
+                   help="单次 socket 读超时秒数，默认 60（防慢连接占满线程）")
+    p.add_argument("--trust-proxy", action="store_true",
+                   help="信任反代传来的 X-Forwarded-For（仅当直连方在 --trusted-proxy 内）；"
+                        "也可用环境变量 AUDIOFORGE_TRUST_PROXY=1")
+    p.add_argument("--trusted-proxy", metavar="CIDR[,CIDR]",
+                   help=f"允许传入 XFF 的反代地址/网段，默认 {', '.join(DEFAULT_TRUSTED_PROXIES)}；"
+                        "也可用环境变量 AUDIOFORGE_TRUSTED_PROXY")
     p.add_argument("--ffmpeg", **_FFMPEG_OPT)
     p.set_defaults(func=cmd_serve)
     return ap

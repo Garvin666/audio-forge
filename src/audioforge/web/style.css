@@ -347,6 +347,18 @@ button {
 
 .results .bad { color: var(--danger); }
 
+/* 体积校验不一致等「非致命告警」：仍可下载，但要让用户看得见 */
+.results .warn {
+  color: #b45309;
+  font-size: 11.5px;
+  font-family: var(--mono);
+  white-space: nowrap;
+}
+
+@media (prefers-color-scheme: dark) {
+  .results .warn { color: #fbbf24; }
+}
+
 .tip {
   margin: 12px 0 0;
   font-size: 11.5px;

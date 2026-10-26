@@ -1,0 +1,39 @@
+# 提交前自动跑一遍静态检查与测试。
+#
+# 用法：pip install pre-commit && pre-commit install
+# 手动全跑：pre-commit run --all-files
+#
+# 两点说明：
+# 1. `ruff-format` 只作用于**本次改动**的文件，不会一次性重排全仓 ——
+#    想让历史文件也统一，手动跑一次 `ruff format .` 再提交。
+# 2. `unittest` 钩子不传文件名（pass_filenames: false），因为测试彼此有共享
+#    fixture；`tests/test_httpd.py` 会额外起真实端口，大约 10 秒。
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.2
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+      - id: check-yaml
+      - id: check-toml
+      - id: check-added-large-files
+        args: [--maxkb=2048]
+      - id: mixed-line-ending
+        args: [--fix=lf]
+
+  - repo: local
+    hooks:
+      - id: unittest
+        name: unittest (python -m unittest)
+        entry: python -m unittest discover -s tests -t .
+        language: system
+        pass_filenames: false

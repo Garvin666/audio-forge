@@ -4,7 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "audio-forge"
-version = "1.0.0"
+# 版本单一来源：只在 src/audioforge/__init__.py 里写一次
+dynamic = ["version"]
 description = "NCM 容器解密 + 通用音频格式转换，附零依赖本地 Web 上传平台"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -28,6 +29,10 @@ classifiers = [
 # 运行时零第三方依赖：AES/keystream 自己实现，HTTP 服务用标准库。
 dependencies = []
 
+[project.optional-dependencies]
+# 开发期工具链；安装后即可跑 ruff / mypy / coverage
+dev = ["ruff>=0.6", "mypy>=1.10", "coverage[toml]>=7.4"]
+
 [project.scripts]
 audioforge = "audioforge.cli:main"
 
@@ -35,6 +40,7 @@ audioforge = "audioforge.cli:main"
 Homepage = "https://github.com/Garvin666/audio-forge"
 Source = "https://github.com/Garvin666/audio-forge"
 Issues = "https://github.com/Garvin666/audio-forge/issues"
+Changelog = "https://github.com/Garvin666/audio-forge/blob/main/CHANGELOG.md"
 
 [tool.setuptools]
 package-dir = { "" = "src" }
@@ -43,4 +49,72 @@ package-dir = { "" = "src" }
 where = ["src"]
 
 [tool.setuptools.package-data]
-audioforge = ["web/*.html", "web/*.js", "web/*.css"]
+audioforge = ["web/*.html", "web/*.js", "web/*.css", "py.typed"]
+
+[tool.setuptools.dynamic]
+version = { attr = "audioforge.__version__" }
+
+# --------------------------------------------------------------------------- #
+# ruff：lint + 格式化
+# --------------------------------------------------------------------------- #
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+extend-exclude = [".git", "build", "dist", "*.egg-info"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+# E501 交给格式化器与人工判断：本项目有大量对齐注释与 URL，硬折行反而更难读
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# 测试里 import 顺序按 `src` 先 sys.path 再导入业务模块，isort 会打架
+"tests/*" = ["E402"]
+"tasks/*" = ["E402", "T201"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+# --------------------------------------------------------------------------- #
+# mypy
+# --------------------------------------------------------------------------- #
+
+[tool.mypy]
+python_version = "3.9"
+files = ["src"]
+# 渐进式收紧：先查函数体内的类型，不要求全量注解（`--strict` 留到下一个大版本）
+check_untyped_defs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unreachable = true
+no_implicit_optional = true
+show_error_codes = true
+pretty = true
+
+[[tool.mypy.overrides]]
+# 可选依赖 / 平台相关模块：装了才用到，缺了不影响主线
+module = ["imageio_ffmpeg", "librt", "winreg"]
+ignore_missing_imports = true
+
+# --------------------------------------------------------------------------- #
+# coverage
+# --------------------------------------------------------------------------- #
+
+[tool.coverage.run]
+source = ["src/audioforge"]
+branch = true
+omit = ["*/tests/*"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+# 当前实测 83%（212 个用例）；留一点余量，新增代码掉下来会挡住 CI 而不是挡住人
+fail_under = 80
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+]

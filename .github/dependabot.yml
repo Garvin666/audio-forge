@@ -1,0 +1,30 @@
+version: 2
+
+updates:
+  # 运行时依赖为空（零第三方依赖），但 dev extra 要跟
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      dev-tools:
+        patterns: ["ruff", "mypy", "coverage*", "typing_extensions", "mypy_extensions"]
+
+  # 固定到 SHA 的 action 也需要人盯着升级
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # 基础镜像（python:3.13-slim）的出补丁频率比 Python 包高
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3

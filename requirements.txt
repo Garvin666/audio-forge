@@ -20,6 +20,19 @@
 #
 # 二者都不会下载任何第三方包。
 #
+# ── 开发工具（lint / 类型 / 覆盖率） ──────────────────────────────
+#
+# 不是运行时依赖，因此不写进本文件；已声明在 pyproject.toml 的 dev extra 里：
+#
+#   pip install -e ".[dev]"  # ruff + mypy + coverage
+#   ruff check .             # 静态检查（配置见 [tool.ruff]）
+#   mypy                     # 类型检查（配置见 [tool.mypy]）
+#   coverage run --source=src/audioforge -m unittest discover -s tests -t .
+#   coverage report -m       # 门限 80%，见 [tool.coverage.report]
+#
+# 供应链扫描器请以 pyproject.toml 为准：本文件刻意不含任何包名，
+# 目的是让「运行时零依赖」这件事在文件层面也看得见。
+#
 # ── ffmpeg 怎么装 ────────────────────────────────────────────────
 #
 #   Windows : winget install Gyan.FFmpeg     或 scoop install ffmpeg

@@ -20,10 +20,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from test_ncm import META, build_ncm, fake_audio  # noqa: E402
+
 from audioforge.guard import Limits  # noqa: E402
 from audioforge.server import ServerConfig, create_server  # noqa: E402
 from audioforge.transcode import find_ffmpeg  # noqa: E402
-from test_ncm import META, build_ncm, fake_audio  # noqa: E402
 
 BOUNDARY = "----audioforgeHttpTest"
 
@@ -39,7 +40,7 @@ def multipart(files: list[tuple[str, bytes]], fields: dict[str, str]) -> bytes:
         out += (
             f'Content-Disposition: form-data; name="files"; filename="{filename}"\r\n'
             f"Content-Type: application/octet-stream\r\n\r\n"
-        ).encode("utf-8")
+        ).encode()
         out += data + b"\r\n"
     out += b"--" + BOUNDARY.encode() + b"--\r\n"
     return bytes(out)

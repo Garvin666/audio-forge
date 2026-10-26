@@ -69,6 +69,8 @@ class NcmInfo:
     cover_size: int = 0
     cover_ext: str | None = None
     raw_meta: dict = field(default_factory=dict)
+    # 解出体积与元数据推算的对照（见 _size_check）：{} 表示元数据不足、无从判断
+    size_check: dict = field(default_factory=dict)
 
     @property
     def size(self) -> int:
@@ -85,6 +87,7 @@ class NcmInfo:
             "duration_s": round(self.duration_ms / 1000, 2) if self.duration_ms else None,
             "audio_bytes": self.audio_size,
             "has_cover": bool(self.cover_size),
+            "size_consistent": self.size_check.get("consistent"),
         }
 
 
@@ -242,7 +245,9 @@ def _read_cover(fp: BinaryIO, total: int) -> tuple[int, int, str | None]:
 
     head = fp.read(4)
     fp.seek(cover_off)
-    ext = "jpg" if head.startswith(b"\xff\xd8\xff") else "png" if head.startswith(b"\x89PNG") else None
+    ext = "jpg" if head.startswith(b"\xff\xd8\xff") else None
+    if ext is None and head.startswith(b"\x89PNG"):
+        ext = "png"
     return cover_off, cover_len, ext
 
 
@@ -335,7 +340,32 @@ def _peek_plain(fp: BinaryIO, info: NcmInfo, table: bytes, n: int = 4096) -> byt
     if not raw:
         return b""
     stream = (table * (len(raw) // len(table) + 1))[:len(raw)]
-    return (int.from_bytes(raw, "little") ^ int.from_bytes(stream, "little")).to_bytes(len(raw), "little")
+    mixed = int.from_bytes(raw, "little") ^ int.from_bytes(stream, "little")
+    return mixed.to_bytes(len(raw), "little")
+
+
+def _size_check(info: NcmInfo, written: int) -> dict:
+    """用 meta 里的时长 × 码率粗算应得体积，与实得体积对照。
+
+    **这是启发式，不是校验和**：VBR / 元数据不准的文件本来就会偏，所以结果只用于
+    「提示可能被截断」，绝不据此抛错或拒绝产出（误报比漏报更伤用户）。
+    头部那 4 字节 crc32 的确切覆盖范围尚未实测确认，故不参与判断（见 docs/FORMAT.md）。
+    """
+    duration_ms = info.duration_ms or 0
+    bitrate = info.bitrate or 0
+    if duration_ms <= 0 or bitrate <= 0 or written <= 0:
+        return {}
+    expected = duration_ms / 1000 * bitrate / 8
+    if expected <= 0:
+        return {}
+    ratio = written / expected
+    return {
+        "expected_bytes": int(expected),
+        "actual_bytes": written,
+        "ratio": round(ratio, 3),
+        # 0.5–2.0 只用来抓「少了一半以上」这种明显截断
+        "consistent": 0.5 <= ratio <= 2.0,
+    }
 
 
 def probe(path: str | Path) -> NcmInfo:
@@ -373,14 +403,24 @@ def decrypt(
         out_dir = Path(out_dir) if out_dir else src.parent
         out_dir.mkdir(parents=True, exist_ok=True)
         out = out_dir / f"{src.stem}.{info.fmt}"
+        tmp = out.with_name(out.name + ".part")
 
         if out.exists() and not overwrite:
             raise NcmError(f"输出已存在：{out}")
 
         fp.seek(info.audio_offset)
-        with out.open("wb") as dst:
-            written = _xor_keystream(fp, dst, table, info.audio_size)
-        info.audio_size = written
+        try:
+            with tmp.open("wb") as dst:
+                written = _xor_keystream(fp, dst, table, info.audio_size)
+            info.audio_size = written
+            info.size_check = _size_check(info, written)
+            if written == 0:
+                raise NcmError(f"解密后输出为空：{out}")
+            # 先写 .part 再原子改名：中途失败不会在用户音乐目录里留半截文件
+            tmp.replace(out)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
 
         if extract_cover and info.cover_size:
             ext = info.cover_ext or "jpg"
@@ -388,6 +428,4 @@ def decrypt(
             fp.seek(info.cover_offset)
             cover_path.write_bytes(fp.read(info.cover_size))
 
-    if out.stat().st_size == 0:
-        raise NcmError(f"解密后输出为空：{out}")
     return out, info

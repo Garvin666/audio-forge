@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -67,6 +68,9 @@ FORMATS: dict[str, TargetFormat] = {
 
 QUALITY_NAMES = ("low", "medium", "high")
 
+# 码率只接受「数字 + 可选 k」，避免把任意串塞进 ffmpeg 参数位
+_BITRATE = re.compile(r"^\d{2,4}[kK]?$")
+
 # Windows 上常见的非 PATH 安装位置
 _WIN_HINTS = (
     r"C:\ffmpeg\bin\ffmpeg.exe",
@@ -92,7 +96,7 @@ def find_ffmpeg() -> str | None:
 
     # imageio-ffmpeg 会在 site-packages 里塞一份静态二进制，装了就直接用
     try:
-        import imageio_ffmpeg  # type: ignore
+        import imageio_ffmpeg
 
         exe = imageio_ffmpeg.get_ffmpeg_exe()
         if exe and Path(exe).is_file():
@@ -134,8 +138,14 @@ def convert(
     overwrite: bool = True,
     ffmpeg: str | None = None,
     timeout: int = 900,
+    max_bytes: int | None = None,
 ) -> Path:
-    """把任意 ffmpeg 能读的音频转成 ``target`` 格式，返回输出路径。"""
+    """把任意 ffmpeg 能读的音频转成 ``target`` 格式，返回输出路径。
+
+    ``max_bytes`` 给输出体积封顶：``-fs`` 让 ffmpeg 写到上限就停（不至于把磁盘写满），
+    落盘后再核一次大小 —— 真超了就当次失败、丢掉产物，而不是留下一个「看着像成品」
+    的半截文件等下一次磁盘检查来捞。
+    """
     target = target.lower().lstrip(".")
     fmt = FORMATS.get(target)
     if fmt is None:
@@ -161,23 +171,47 @@ def convert(
     if dst.exists() and not overwrite:
         raise TranscodeError(f"输出已存在：{dst}")
 
+    if bitrate and not _BITRATE.match(bitrate):
+        raise TranscodeError(f"码率写法不合法：{bitrate!r}（示例：320k / 192）")
+
+    # ffmpeg 靠扩展名选封装器，所以临时文件名必须保留目标扩展名（.part.mp3）
+    tmp = out_dir / f".{src.stem}.part{fmt.ext}"
+    tmp.unlink(missing_ok=True)
+
     cmd = [exe, "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", str(src), "-vn"]
     cmd += ["-map_metadata", "0", "-c:a", fmt.codec]
     br = bitrate or fmt.bitrate(quality)
     if br:
         cmd += ["-b:a", br]
     cmd += list(fmt.extra)
-    cmd.append(str(dst))
+    if max_bytes and max_bytes > 0:
+        # 放在输出文件之前：ffmpeg 的 -fs 是输出选项
+        cmd += ["-fs", str(int(max_bytes))]
+    cmd.append(str(tmp))
 
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired as exc:
+        tmp.unlink(missing_ok=True)
         raise TranscodeError(f"转码超时（>{timeout}s）：{src.name}") from exc
     except OSError as exc:
+        tmp.unlink(missing_ok=True)
         raise TranscodeError(f"无法启动 ffmpeg：{exc}") from exc
 
-    if proc.returncode != 0 or not dst.exists() or dst.stat().st_size == 0:
+    if proc.returncode != 0 or not tmp.exists() or tmp.stat().st_size == 0:
+        tmp.unlink(missing_ok=True)
         detail = (proc.stderr or proc.stdout or "").strip().splitlines()
         tail = " | ".join(detail[-3:]) if detail else f"退出码 {proc.returncode}"
         raise TranscodeError(f"ffmpeg 转码失败：{tail}")
+
+    size = tmp.stat().st_size
+    if max_bytes and max_bytes > 0 and size >= max_bytes:
+        tmp.unlink(missing_ok=True)
+        raise TranscodeError(
+            f"输出超过体积上限 {max_bytes / (1 << 20):.0f} MB（已写到 {size} 字节被截断），"
+            f"请改用有损格式或降低码率"
+        )
+
+    # 只有成功才落到最终文件名：超时/被杀不会留下「看着像成品」的半截文件
+    tmp.replace(dst)
     return dst

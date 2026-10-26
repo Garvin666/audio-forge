@@ -6,7 +6,7 @@ Nginx 只做 TLS、连接级限流和安全头 —— 因为只有应用知道�
 
 ```
 deploy/
-├── audio-forge.service         systemd 单元（含加固项，需 systemd ≥ 242）
+├── audio-forge.service         systemd 单元（加固全生效 ≥ 242，verify 零输出 ≥ 247）
 ├── audio-forge.service.rhel7   老 systemd 降级版（< 242，如 CentOS 7 的 219）
 ├── env.example                 口令/令牌模板，放 /etc/audio-forge/env
 └── nginx.conf                  反代配置（TLS + 连接限流 + 超时 + 安全头）
@@ -243,9 +243,20 @@ test -z "$(systemd-analyze verify /etc/systemd/system/audio-forge.service 2>&1)"
 
 ### 3.4 换个 systemd 版本还能不能用：跨版本实测
 
-上面全部是在 systemd 257（Debian 13）上测的。这 14 条加固指令不是每个版本都有，
-换台机器可能直接启动失败。**完整版单元要求 systemd ≥ 242**，卡在 `RestrictSUIDSGID=`
-（上游 242 引入，是这批里最晚的）。
+上面全部是在 systemd 257（Debian 13）上测的。这份单元里的加固指令不是每个版本都有，
+换台机器可能直接启动失败。
+
+**两档要求，别混着说：**
+
+| 目标 | 需要 | 判据 |
+| --- | --- | --- |
+| **能启动、加固全部生效** | systemd ≥ 242 | 启动后实测（见下） |
+| **`systemd-analyze verify` 零输出** | systemd ≥ 247 | `test -z "$(systemd-analyze verify …)"` |
+
+242–246 的关系是「能用但有告警」：`ProtectProc=`（247 引入）会被忽略，systemd 只打印一行
+`Unknown key name 'ProtectProc' in section 'Service', ignoring.` 然后继续用其余全部加固。
+**实测（systemd 245 / Ubuntu 20.04）**：整份单元直接 `verify`，输出恰好就是这一行，
+`RC=0` —— 也就是说它既不会失败，也**不能靠退出码发现问题**（这也是判据必须是「零输出」的原因）。
 
 | 指令 | 上游引入版本 | 219（CentOS 7） | 239（CentOS 8） | 245（Ubuntu 20.04） | 257（Debian 13） |
 | --- | --- | --- | --- | --- | --- |
@@ -253,13 +264,20 @@ test -z "$(systemd-analyze verify /etc/systemd/system/audio-forge.service 2>&1)"
 | `PrivateDevices` | 209 | ✓ | ✓ | ✓ | ✓ |
 | `ProtectSystem` / `ProtectHome` | 214 | ✓ | ✓ | ✓ | ✓ |
 | `TasksMax` | 227 | ✓ | ✓ | ✓ | ✓ |
+| `AmbientCapabilities` | 229 | ✗ | ✓ | ✓ | ✓ |
 | `ReadWritePaths` | 231 | ✗ 用 `ReadWriteDirectories` | ✓ | ✓ | ✓ |
 | `MemoryMax` | 231 | ✗ 用 `MemoryLimit` | ✓ | ✓ | ✓ |
+| `RestrictRealtime` | 231 | ✗ | ✓ | ✓ | ✓ |
 | `ProtectKernelTunables` / `ProtectKernelModules` / `ProtectControlGroups` | 232 | ✗ | ✓ | ✓ | ✓ |
 | **`ProtectSystem=strict`（取值）** | 232 | ✗ 只认 `yes`/`no`/`full` | ✓ | ✓ | ✓ |
+| `SystemCallErrorNumber` | 232 | ✗ | ✓ | ✓ | ✓ |
 | `RestrictNamespaces` | 233 | ✗ | ✓ | ✓ | ✓ |
 | `LockPersonality` | 235 | ✗ | ✓（红帽反向移植） | ✓ | ✓ |
 | `RestrictSUIDSGID` | 242 | ✗ | ✓（红帽反向移植） | ✓ | ✓ |
+| `ProtectHostname` | 242 | ✗ | ✓（红帽反向移植） | ✓ | ✓ |
+| `ProtectKernelLogs` | 244 | ✗ | ✗ | ✓ | ✓ |
+| `ProtectClock` | 245 | ✗ | ✗ | ✓ | ✓ |
+| **`ProtectProc=invisible`** | 247 | ✗ | ✗ | ✗（忽略，仅告警） | ✓ |
 
 - 引入版本取自上游 `man/systemd.exec.xml` 的 version-info 指针与 `NEWS`，两边对得上
   （例：`* A new boolean sandboxing option RestrictSUIDSGID= has been added` 出现在 `CHANGES WITH 242` 段）。

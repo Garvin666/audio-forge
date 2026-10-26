@@ -7,6 +7,7 @@ AES-128、RC4 变体 keystream、multipart 解析、HTTP 服务全部自己写�
 Python 依赖**（`pip` 不会下载任何东西）。唯一的可选外部依赖是 ffmpeg，只服务于通用格式互转。
 
 <p>
+<img alt="ci" src="https://github.com/Garvin666/audio-forge/actions/workflows/ci.yml/badge.svg">
 <img alt="python" src="https://img.shields.io/badge/python-3.9%2B-3776ab">
 <img alt="deps" src="https://img.shields.io/badge/dependencies-0-brightgreen">
 <img alt="license" src="https://img.shields.io/badge/license-MIT-blue">
@@ -324,6 +325,7 @@ python -m unittest discover -s tests -t . -v
 - **HTTP**：随机端口起真实服务，跑通上传→转换→下载全链路，另测 400/404/413 与路径穿越
 
 CI 在 Python 3.9–3.13 五个版本上跑同一套测试。ffmpeg 相关用例在检测不到 ffmpeg 时自动跳过。
+runner 若没预装 ffmpeg，CI 会装 `imageio-ffmpeg` 的静态二进制（不走 apt，避免多 job 抢锁）。
 
 ---
 

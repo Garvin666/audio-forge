@@ -22,19 +22,19 @@ DEFAULT_TRUSTED_PROXIES: tuple[str, ...] = ("127.0.0.1", "::1")
 class ServerConfig:
     host: str = "127.0.0.1"
     port: int = 8000
-    max_bytes: int = 200 << 20        # 单次请求上限 200 MiB
-    ttl: int = 3600                   # job 目录存活秒数
-    work_dir: Path | None = None      # 默认系统临时目录
-    concurrency: int = 4              # 同时转换的请求数
-    download_slots: int = 0           # 同时下载数，0 = 自动（max(8, concurrency*2)）
-    conn_timeout: int = 60            # 单次 socket 读超时（慢连接即断开）
-    max_out_mb: int = 2048            # 单个产物体积上限，0 = 不限制
+    max_bytes: int = 200 << 20  # 单次请求上限 200 MiB
+    ttl: int = 3600  # job 目录存活秒数
+    work_dir: Path | None = None  # 默认系统临时目录
+    concurrency: int = 4  # 同时转换的请求数
+    download_slots: int = 0  # 同时下载数，0 = 自动（max(8, concurrency*2)）
+    conn_timeout: int = 60  # 单次 socket 读超时（慢连接即断开）
+    max_out_mb: int = 2048  # 单个产物体积上限，0 = 不限制
     ffmpeg: str | None = None
     quiet: bool = False
     auth_user: str | None = None
     auth_pass: str | None = None
     access_token: str | None = None
-    trust_proxy: bool = False         # 仅当反代来自 trusted_proxies 时才认 XFF
+    trust_proxy: bool = False  # 仅当反代来自 trusted_proxies 时才认 XFF
     trusted_proxies: tuple[str, ...] = DEFAULT_TRUSTED_PROXIES
     limits: Limits = field(default_factory=Limits)
     _root: Path | None = field(default=None, init=False, repr=False)

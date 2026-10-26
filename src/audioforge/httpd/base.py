@@ -98,7 +98,7 @@ class BaseHandler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt: str, *args) -> None:  # noqa: D401
         try:
-            quiet = self.server.cfg.quiet                        # type: ignore[attr-defined]
+            quiet = self.server.cfg.quiet  # type: ignore[attr-defined]
         except AttributeError:
             quiet = False
         if quiet:
@@ -107,8 +107,15 @@ class BaseHandler(BaseHTTPRequestHandler):
 
     # ---------- 基础工具 ---------- #
 
-    def _send(self, status: int, body: bytes, ctype: str, extra: dict | None = None,
-              *, cache: str = "no-store") -> None:
+    def _send(
+        self,
+        status: int,
+        body: bytes,
+        ctype: str,
+        extra: dict | None = None,
+        *,
+        cache: str = "no-store",
+    ) -> None:
         self.send_response(status)
         if status != HTTPStatus.NOT_MODIFIED:
             self.send_header("Content-Type", ctype)
@@ -126,8 +133,12 @@ class BaseHandler(BaseHTTPRequestHandler):
             self.close_connection = True
 
     def _json(self, obj, status: int = 200, *, cache: str = "no-store") -> None:
-        self._send(status, json.dumps(obj, ensure_ascii=False).encode("utf-8"),
-                   "application/json; charset=utf-8", cache=cache)
+        self._send(
+            status,
+            json.dumps(obj, ensure_ascii=False).encode("utf-8"),
+            "application/json; charset=utf-8",
+            cache=cache,
+        )
 
     def _error(self, status: int, msg: str, headers: dict | None = None) -> None:
         """错误响应；``headers`` 用于 401 的挑战头、429 的 Retry-After、416 的 Content-Range。"""
@@ -142,11 +153,14 @@ class BaseHandler(BaseHTTPRequestHandler):
         if self._responded:
             self.close_connection = True
             return
-        self._send(HTTPStatus.INTERNAL_SERVER_ERROR,
-                   json.dumps({"ok": False, "error": "服务器内部错误", "id": rid},
-                              ensure_ascii=False).encode("utf-8"),
-                   "application/json; charset=utf-8",
-                   {"X-Request-Id": rid})
+        self._send(
+            HTTPStatus.INTERNAL_SERVER_ERROR,
+            json.dumps(
+                {"ok": False, "error": "服务器内部错误", "id": rid}, ensure_ascii=False
+            ).encode("utf-8"),
+            "application/json; charset=utf-8",
+            {"X-Request-Id": rid},
+        )
 
     def _client_ip(self) -> str:
         """客户端 IP；仅在显式信任反代时才读 X-Forwarded-For。
@@ -156,7 +170,7 @@ class BaseHandler(BaseHTTPRequestHandler):
         里」两个条件同时成立。
         """
         peer = self.client_address[0]
-        cfg = self.server.cfg                                    # type: ignore[attr-defined]
+        cfg = self.server.cfg  # type: ignore[attr-defined]
         if not cfg.trust_proxy or not _is_trusted(peer, cfg.trusted_proxies):
             return peer
         forwarded = (self.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
@@ -180,9 +194,9 @@ class BaseHandler(BaseHTTPRequestHandler):
             "X-Auth-Token": self.headers.get("X-Auth-Token", "") or query_token,
         }
         try:
-            self.server.guard.verify(headers)                    # type: ignore[attr-defined]
+            self.server.guard.verify(headers)  # type: ignore[attr-defined]
             if check_rate:
-                self.server.guard.check_rate(ip)                 # type: ignore[attr-defined]
+                self.server.guard.check_rate(ip)  # type: ignore[attr-defined]
         except Denied as exc:
             # 先读掉 body 再回错误：不读的话残余字节会被当成下一条请求行
             self._reject_body(self._body_length())
@@ -229,7 +243,7 @@ class BaseHandler(BaseHTTPRequestHandler):
     # ---------- 静态资源 ---------- #
 
     def _static(self, name: str) -> None:
-        web_dir = self.server.web_dir                              # type: ignore[attr-defined]
+        web_dir = self.server.web_dir  # type: ignore[attr-defined]
         path = (web_dir / name).resolve()
         if web_dir.resolve() not in path.parents or not path.is_file():
             self._error(HTTPStatus.NOT_FOUND, "not found")
@@ -237,14 +251,16 @@ class BaseHandler(BaseHTTPRequestHandler):
         stat = path.stat()
         etag = f'"{stat.st_mtime_ns:x}-{stat.st_size:x}"'
         if self.headers.get("If-None-Match") == etag:
-            self._send(HTTPStatus.NOT_MODIFIED, b"", "", {"ETag": etag},
-                       cache="public, max-age=300")
+            self._send(
+                HTTPStatus.NOT_MODIFIED, b"", "", {"ETag": etag}, cache="public, max-age=300"
+            )
             return
         ctype = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
         if ctype.startswith("text/") or ctype in ("application/javascript", "text/javascript"):
             ctype += "; charset=utf-8"
-        self._send(HTTPStatus.OK, path.read_bytes(), ctype,
-                   {"ETag": etag}, cache="public, max-age=300")
+        self._send(
+            HTTPStatus.OK, path.read_bytes(), ctype, {"ETag": etag}, cache="public, max-age=300"
+        )
 
     # ---------- 路由 ---------- #
 

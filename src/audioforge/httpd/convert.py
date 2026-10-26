@@ -45,8 +45,9 @@ def handle(h) -> None:
         return
     if total > cfg.max_bytes:
         h._reject_body(total)
-        h._error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
-                 f"上传超过上限 {cfg.max_bytes / (1 << 20):.0f} MB")
+        h._error(
+            HTTPStatus.REQUEST_ENTITY_TOO_LARGE, f"上传超过上限 {cfg.max_bytes / (1 << 20):.0f} MB"
+        )
         return
 
     ip = h._client_ip()
@@ -105,8 +106,7 @@ def handle(h) -> None:
         guard.record(ip, done, total)
         guard.note_disk(total)
         jobs.finish(job_key)
-        h._json({"ok": True, "job": token, "results": results,
-                 "status": f"/api/job/{job_key}"})
+        h._json({"ok": True, "job": token, "results": results, "status": f"/api/job/{job_key}"})
     except MultipartError as exc:
         if job_key:
             jobs.finish(job_key, error=str(exc))
@@ -125,6 +125,7 @@ def handle(h) -> None:
 # 单文件
 # --------------------------------------------------------------------------- #
 
+
 def _spool(h, path: Path, total: int) -> None:
     """把请求体分块写盘，避免整包进内存。"""
     left = total
@@ -137,8 +138,9 @@ def _spool(h, path: Path, total: int) -> None:
             left -= len(chunk)
 
 
-def _convert_one(h, part, out_dir: Path, target: str,
-                 quality: str, bitrate: str | None, token: str) -> dict:
+def _convert_one(
+    h, part, out_dir: Path, target: str, quality: str, bitrate: str | None, token: str
+) -> dict:
     src: Path = part.path
     name = part.filename or src.name
     ext = src.suffix.lower()
@@ -153,8 +155,13 @@ def _convert_one(h, part, out_dir: Path, target: str,
             want = target if target not in ("auto", "", info.fmt) else ""
             if want:
                 produced = transcode.convert(
-                    decoded, out_dir, want, quality=quality, bitrate=bitrate,
-                    ffmpeg=ffmpeg, max_bytes=cap,
+                    decoded,
+                    out_dir,
+                    want,
+                    quality=quality,
+                    bitrate=bitrate,
+                    ffmpeg=ffmpeg,
+                    max_bytes=cap,
                 )
                 decoded.unlink(missing_ok=True)
                 note += f" → {want}"
@@ -163,7 +170,12 @@ def _convert_one(h, part, out_dir: Path, target: str,
         if target in ("auto", ""):
             raise ValueError("非 NCM 文件必须指定目标格式")
         produced = transcode.convert(
-            src, out_dir, target, quality=quality, bitrate=bitrate, ffmpeg=ffmpeg,
+            src,
+            out_dir,
+            target,
+            quality=quality,
+            bitrate=bitrate,
+            ffmpeg=ffmpeg,
             max_bytes=cap,
         )
         return _ok_item(h, name, produced, f"转码 → {target}", {}, token)
@@ -180,12 +192,15 @@ def _size_warning(info: ncm.NcmInfo) -> str | None:
     check = getattr(info, "size_check", None) or {}
     if not check or check.get("consistent", True):
         return None
-    return (f"解出 {check['actual_bytes']} 字节，按元数据（时长×码率）推算约 "
-            f"{check['expected_bytes']} 字节，文件可能被截断")
+    return (
+        f"解出 {check['actual_bytes']} 字节，按元数据（时长×码率）推算约 "
+        f"{check['expected_bytes']} 字节，文件可能被截断"
+    )
 
 
-def _ok_item(h, source: str, path: Path, note: str, info: dict, token: str,
-             *, warning: str | None = None) -> dict:
+def _ok_item(
+    h, source: str, path: Path, note: str, info: dict, token: str, *, warning: str | None = None
+) -> dict:
     # token 由调用方显式传入（旧实现用 path.parent.parent.name 反推，目录一改就静默出错）
     item = {
         "ok": True,

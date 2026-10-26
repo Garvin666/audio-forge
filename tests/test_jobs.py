@@ -45,7 +45,7 @@ class TestLifecycle(unittest.TestCase):
         self.jobs.add("j1", {"source": "a.ncm", "ok": True, "name": "a.mp3"})
         self.jobs.add("j1", {"source": "b.ncm", "ok": False, "error": "boom"})
         snap = self.jobs.get("j1")
-        self.assertEqual(snap["done"], 2)          # 失败也算「处理完一个」
+        self.assertEqual(snap["done"], 2)  # 失败也算「处理完一个」
         self.assertEqual(snap["failed"], 1)
         self.assertEqual([i["ok"] for i in snap["items"]], [True, False])
 
@@ -57,7 +57,7 @@ class TestLifecycle(unittest.TestCase):
         self.assertTrue(snap["finished"])
         self.assertEqual(snap["elapsed"], 1.5)
 
-        self.clock.advance(100)                     # 完成后再看，耗时不跟着涨
+        self.clock.advance(100)  # 完成后再看，耗时不跟着涨
         self.assertEqual(self.jobs.get("j1")["elapsed"], 1.5)
 
     def test_finish_with_error(self):
@@ -107,19 +107,19 @@ class TestReclaim(unittest.TestCase):
         clock = Clock()
         jobs = JobRegistry(clock=clock, ttl=60)
         jobs.start("running", total=1)
-        clock.advance(10_000)                       # 卡住的转换：不能因为「旧」就丢
+        clock.advance(10_000)  # 卡住的转换：不能因为「旧」就丢
         jobs.start("new", total=1)
         self.assertIsNotNone(jobs.get("running"))
 
     def test_limit_drops_oldest_finished_first(self):
         clock = Clock()
         jobs = JobRegistry(clock=clock, ttl=10_000, limit=3)
-        jobs.start("running", total=1)              # 未完成，最「旧」
+        jobs.start("running", total=1)  # 未完成，最「旧」
         for name in ("a", "b", "c"):
             clock.advance(1)
             jobs.start(name, total=1)
             jobs.finish(name)
-        self.assertEqual(jobs.size(), 3)            # a/b/c + running 触发了淘汰
+        self.assertEqual(jobs.size(), 3)  # a/b/c + running 触发了淘汰
 
         names = [n for n in ("running", "a", "b", "c") if jobs.get(n) is not None]
         # 淘汰优先级：已完成且最旧 → a 先走；未完成的 running 留着

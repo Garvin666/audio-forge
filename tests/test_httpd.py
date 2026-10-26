@@ -35,18 +35,18 @@ from audioforge.httpd import (  # noqa: E402
 from audioforge.httpd.base import BaseHandler, _is_trusted  # noqa: E402
 from audioforge.httpd.download import _parse_range  # noqa: E402
 
-JOB_ID = "abcdef0123456789" * 2          # 32 位 hex
+JOB_ID = "abcdef0123456789" * 2  # 32 位 hex
 
 
 # --------------------------------------------------------------------------- #
 # 纯函数
 # --------------------------------------------------------------------------- #
 
+
 class TestMaskSecrets(unittest.TestCase):
     def test_token_is_masked(self):
         raw = "GET /api/file/abc/x.mp3?token=s3cr3t HTTP/1.1"
-        self.assertEqual(mask_secrets(raw),
-                         "GET /api/file/abc/x.mp3?token=*** HTTP/1.1")
+        self.assertEqual(mask_secrets(raw), "GET /api/file/abc/x.mp3?token=*** HTTP/1.1")
 
     def test_other_params_survive(self):
         self.assertEqual(mask_secrets("/x?token=abc&v=1&t=2"), "/x?token=***&v=1&t=2")
@@ -164,6 +164,7 @@ class TestClientIp(unittest.TestCase):
 # 端到端
 # --------------------------------------------------------------------------- #
 
+
 class CacheCase(HttpMixin, unittest.TestCase):
     """静态资源缓存策略（P1-6）。"""
 
@@ -220,7 +221,7 @@ class RangeCase(HttpMixin, unittest.TestCase):
     """流式下载 + Range + HEAD（P0-4）。"""
 
     server_options = {"limits": Limits.unlimited()}
-    max_bytes = 8 << 20                   # 下面那个 4 MB 的用例要留出 multipart 开销
+    max_bytes = 8 << 20  # 下面那个 4 MB 的用例要留出 multipart 开销
     _uploaded: tuple | None = None
 
     def setUp(self):
@@ -322,8 +323,10 @@ class JobApiCase(HttpMixin, unittest.TestCase):
     def test_upload_reports_job_status_url(self):
         status, data = self.post(
             "/api/convert",
-            multipart([("j.ncm", build_ncm(fake_audio(2_000), meta=META))],
-                      {"target": "auto", "job": JOB_ID}),
+            multipart(
+                [("j.ncm", build_ncm(fake_audio(2_000), meta=META))],
+                {"target": "auto", "job": JOB_ID},
+            ),
         )
         self.assertEqual(status, 200, data)
         self.assertEqual(data["status"], f"/api/job/{JOB_ID}")
@@ -363,8 +366,9 @@ class BindFailureCase(unittest.TestCase):
 
     def test_bad_address_surfaces_real_error(self):
         # 192.0.2.0/24 是 RFC 5737 的 TEST-NET-1，本机不可能持有该地址
-        cfg = ServerConfig(host="192.0.2.1", port=0, work_dir=Path(self.tmp.name),
-                           limits=Limits.unlimited())
+        cfg = ServerConfig(
+            host="192.0.2.1", port=0, work_dir=Path(self.tmp.name), limits=Limits.unlimited()
+        )
         with self.assertRaises(OSError) as ctx:
             create_server(cfg, start_cleaner=False)
         self.assertNotIsInstance(ctx.exception, AttributeError)

@@ -42,7 +42,7 @@ class TestAuthModes(unittest.TestCase):
         g, _ = make()
         self.assertEqual(g.mode, "none")
         self.assertFalse(g.requires_auth)
-        g.verify({})                      # 不抛即通过
+        g.verify({})  # 不抛即通过
 
     def test_basic_mode(self):
         g, _ = make(user="alice", password="s3cret")
@@ -65,7 +65,7 @@ class TestAuthModes(unittest.TestCase):
         g, _ = make(user="alice", password="s3cret")
         with self.assertRaises(Denied) as ctx:
             g.verify({})
-        self.assertIn("charset=\"UTF-8\"", ctx.exception.headers["WWW-Authenticate"])
+        self.assertIn('charset="UTF-8"', ctx.exception.headers["WWW-Authenticate"])
 
     def test_basic_malformed_base64(self):
         g, _ = make(user="alice", password="s3cret")
@@ -87,14 +87,14 @@ class TestAuthModes(unittest.TestCase):
         self.assertEqual(g.mode, "bearer")
         g.verify({"Authorization": "Bearer tok123"})
         g.verify({"X-Auth-Token": "tok123"})
-        g.verify({"Authorization": "bearer tok123"})     # 前缀大小写不敏感
+        g.verify({"Authorization": "bearer tok123"})  # 前缀大小写不敏感
 
     def test_bearer_wrong(self):
         g, _ = make(token="tok123")
         with self.assertRaises(Denied) as ctx:
             g.verify({"Authorization": "Bearer nope"})
         self.assertEqual(ctx.exception.status, 401)
-        self.assertEqual(ctx.exception.headers, {})      # 没有 basic 就不发挑战头
+        self.assertEqual(ctx.exception.headers, {})  # 没有 basic 就不发挑战头
 
     def test_combined_is_or(self):
         g, _ = make(user="alice", password="pw", token="tok")
@@ -121,12 +121,12 @@ class TestRate(unittest.TestCase):
         self.assertIn("Retry-After", ctx.exception.headers)
 
         clock.advance(61)
-        g.check_rate("1.1.1.1")           # 窗口滚动后可继续
+        g.check_rate("1.1.1.1")  # 窗口滚动后可继续
 
     def test_per_ip_isolation(self):
         g, _ = make(limits=Limits(per_minute=1))
         g.check_rate("1.1.1.1")
-        g.check_rate("2.2.2.2")           # 不同 IP 不共享额度
+        g.check_rate("2.2.2.2")  # 不同 IP 不共享额度
         with self.assertRaises(Denied):
             g.check_rate("1.1.1.1")
 
@@ -147,7 +147,7 @@ class TestQuota(unittest.TestCase):
             g.check_quota("ip", n_files=1)
         self.assertEqual(ctx.exception.status, 429)
         clock.advance(86401)
-        g.check_quota("ip", n_files=1)    # 跨日重置
+        g.check_quota("ip", n_files=1)  # 跨日重置
 
     def test_bytes_per_day(self):
         g, _ = make(limits=Limits(mb_per_day=10))
@@ -165,8 +165,10 @@ class TestQuota(unittest.TestCase):
         self.assertEqual(snap["mb_today"], 5.0)
 
     def test_limits_dict(self):
-        self.assertEqual(Limits.unlimited().as_dict(),
-                         {"per_minute": 0, "files_per_day": 0, "mb_per_day": 0, "disk_mb": 0})
+        self.assertEqual(
+            Limits.unlimited().as_dict(),
+            {"per_minute": 0, "files_per_day": 0, "mb_per_day": 0, "disk_mb": 0},
+        )
 
 
 class TestBucketReclaim(unittest.TestCase):
@@ -179,7 +181,7 @@ class TestBucketReclaim(unittest.TestCase):
         self.assertEqual(g.bucket_count(), 5)
         clock.advance(86401)
         g.check_rate("10.0.0.9")
-        self.assertEqual(g.bucket_count(), 1)        # 过期桶全清，只剩刚访问的
+        self.assertEqual(g.bucket_count(), 1)  # 过期桶全清，只剩刚访问的
 
     def test_prune_is_throttled(self):
         # 每次请求都全表扫一遍也是浪费：prune_every 内的第二次调用不该动表
@@ -237,8 +239,8 @@ class TestDisk(unittest.TestCase):
         g, _ = make(limits=Limits(disk_mb=4), jobs_dir=self.jobs)
         freed = g.ensure_disk()
         self.assertGreater(freed, 0)
-        self.assertFalse(old.exists())          # 最旧的一定先走
-        self.assertTrue(new.exists())           # 最新的留着
+        self.assertFalse(old.exists())  # 最旧的一定先走
+        self.assertTrue(new.exists())  # 最新的留着
         self.assertLessEqual(g.disk_usage_mb(), 4)
 
     def test_disabled_when_zero(self):
@@ -262,12 +264,12 @@ class TestDiskCounter(unittest.TestCase):
     def test_scan_then_cached(self):
         self.assertAlmostEqual(self.guard.disk_usage_mb(), 2.0, places=1)
         (self.jobs / "late.bin").write_bytes(b"x" * (1 << 20))
-        self.assertAlmostEqual(self.guard.disk_usage_mb(), 2.0, places=1)   # 仍在缓存期
+        self.assertAlmostEqual(self.guard.disk_usage_mb(), 2.0, places=1)  # 仍在缓存期
         self.clock.advance(31)
-        self.assertAlmostEqual(self.guard.disk_usage_mb(), 3.0, places=1)   # 兜底重扫
+        self.assertAlmostEqual(self.guard.disk_usage_mb(), 3.0, places=1)  # 兜底重扫
 
     def test_note_disk_adjusts_without_rescan(self):
-        self.guard.disk_usage_mb()                      # 建立基线
+        self.guard.disk_usage_mb()  # 建立基线
         self.guard.note_disk(1 << 20)
         self.assertAlmostEqual(self.guard.disk_usage_mb(), 3.0, places=1)
         self.guard.note_disk(-(1 << 20))

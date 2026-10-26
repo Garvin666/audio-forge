@@ -59,8 +59,7 @@ class HttpMixin:
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
-        opts = dict(max_bytes=cls.max_bytes, ttl=600, quiet=True,
-                    work_dir=Path(cls.tmp.name))
+        opts = dict(max_bytes=cls.max_bytes, ttl=600, quiet=True, work_dir=Path(cls.tmp.name))
         opts.update(cls.server_options)
         cls.cfg = ServerConfig(port=0, **opts)
         cls.httpd = create_server(cls.cfg)
@@ -97,8 +96,9 @@ class HttpMixin:
             except json.JSONDecodeError:
                 return e.code, {"raw": raw.decode("utf-8", "replace")}
 
-    def upload(self, name: str, blob: bytes, target: str = "auto",
-               headers: dict | None = None) -> tuple[int, dict]:
+    def upload(
+        self, name: str, blob: bytes, target: str = "auto", headers: dict | None = None
+    ) -> tuple[int, dict]:
         return self.post("/api/convert", multipart([(name, blob)], {"target": target}), headers)
 
 
@@ -267,8 +267,12 @@ class AuthCase(HttpMixin, unittest.TestCase):
         body = multipart([("x.ncm", build_ncm(fake_audio(5_000), meta=META))], {"target": "auto"})
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=30)
         try:
-            conn.request("POST", "/api/convert", body=body,
-                         headers={"Content-Type": f"multipart/form-data; boundary={BOUNDARY}"})
+            conn.request(
+                "POST",
+                "/api/convert",
+                body=body,
+                headers={"Content-Type": f"multipart/form-data; boundary={BOUNDARY}"},
+            )
             first = conn.getresponse()
             first.read()
             self.assertEqual(first.status, 401)
@@ -289,7 +293,8 @@ class AuthCase(HttpMixin, unittest.TestCase):
     def test_download_accepts_query_token(self):
         audio = fake_audio(5_000)
         status, data = self.upload(
-            "q.ncm", build_ncm(audio, meta=META),
+            "q.ncm",
+            build_ncm(audio, meta=META),
             headers={"Authorization": "Bearer tok-123"},
         )
         self.assertEqual(status, 200, data)
@@ -357,7 +362,7 @@ class ByteQuotaCase(HttpMixin, unittest.TestCase):
     server_options = {"limits": Limits(per_minute=0, files_per_day=0, mb_per_day=1, disk_mb=0)}
 
     def test_byte_quota(self):
-        big = build_ncm(fake_audio(2 << 20), meta=META)     # 2 MB，超出 1 MB 配额
+        big = build_ncm(fake_audio(2 << 20), meta=META)  # 2 MB，超出 1 MB 配额
         status, data = self.upload("big.ncm", big)
         self.assertEqual(status, 429)
         self.assertIn("配额", data["error"])

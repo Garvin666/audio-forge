@@ -62,10 +62,8 @@ class TestSystemdUnit(unittest.TestCase):
         self.assertEqual(argv[1], "serve", f"子命令异常: {argv[1]}")
 
     def argv(self) -> list[str]:
-        line = next(
-            ln.strip() for ln in self.lines if ln.strip().startswith("ExecStart=")
-        )
-        return shlex.split(line[len("ExecStart="):])
+        line = next(ln.strip() for ln in self.lines if ln.strip().startswith("ExecStart="))
+        return shlex.split(line[len("ExecStart=") :])
 
     def test_every_flag_accepted_by_cli(self) -> None:
         """ExecStart 里每个 flag 都必须被 serve 子命令认识。"""
@@ -184,16 +182,16 @@ MISSING_ON_219 = (
     "RestrictNamespaces",
     "RestrictSUIDSGID",
     "LockPersonality",
-    "ReadWritePaths",     # 219 只认旧名 ReadWriteDirectories
-    "MemoryMax",          # 219 只认旧名 MemoryLimit
+    "ReadWritePaths",  # 219 只认旧名 ReadWriteDirectories
+    "MemoryMax",  # 219 只认旧名 MemoryLimit
     "ProtectSystem=strict",  # strict 取值 232 才有，219 只认 yes/no/full
     # 2026-10 主单元新增的几条，在 219 上同样不存在：
-    "ProtectKernelLogs",     # 244
-    "ProtectClock",          # 245
-    "ProtectHostname",       # 242
-    "ProtectProc",           # 247
-    "RestrictRealtime",      # 231
-    "AmbientCapabilities",   # 229
+    "ProtectKernelLogs",  # 244
+    "ProtectClock",  # 245
+    "ProtectHostname",  # 242
+    "ProtectProc",  # 247
+    "RestrictRealtime",  # 231
+    "AmbientCapabilities",  # 229
     "SystemCallErrorNumber",  # 232
 )
 
@@ -206,9 +204,7 @@ class TestLegacyUnit(unittest.TestCase):
         self.text = LEGACY_UNIT.read_text(encoding="utf-8")
         self.lines = join_continuations(self.text)
         # 头部注释里刻意写明了「哪些指令被换掉了」，所以断言只看真正的配置行。
-        self.body = "\n".join(
-            ln for ln in self.lines if not ln.lstrip().startswith("#")
-        )
+        self.body = "\n".join(ln for ln in self.lines if not ln.lstrip().startswith("#"))
 
     def _exec_start(self, lines: list[str]) -> str:
         return next(ln.strip() for ln in lines if ln.strip().startswith("ExecStart="))

@@ -44,7 +44,7 @@ KEY_PREFIX = b"neteasecloudmusic"
 
 META_B64_PREFIX = b"163 key(Don't modify):"
 
-CHUNK = 4 << 20          # 4 MiB，必须是 256 的整数倍
+CHUNK = 4 << 20  # 4 MiB，必须是 256 的整数倍
 _ALIGN = 256
 
 
@@ -95,6 +95,7 @@ class NcmInfo:
 # keystream
 # --------------------------------------------------------------------------- #
 
+
 def keystream_table(key: str) -> bytes:
     """由变长密钥生成 256 字节周期 keystream。
 
@@ -136,10 +137,10 @@ def _xor_keystream(src: BinaryIO, dst: BinaryIO, table: bytes, size: int) -> int
         if len(buf) != want:
             # 中途短读会让后续分块落到错的周期相位上，宁可报错也不产出坏音频
             raise NcmError(f"音频段提前结束：期望 {want} 字节，实得 {len(buf)}")
-        stream = (period * (len(buf) // len(period) + 1))[:len(buf)]
-        mixed = (
-            int.from_bytes(buf, "little") ^ int.from_bytes(stream, "little")
-        ).to_bytes(len(buf), "little")
+        stream = (period * (len(buf) // len(period) + 1))[: len(buf)]
+        mixed = (int.from_bytes(buf, "little") ^ int.from_bytes(stream, "little")).to_bytes(
+            len(buf), "little"
+        )
         dst.write(mixed)
         written += len(buf)
         remaining -= len(buf)
@@ -149,6 +150,7 @@ def _xor_keystream(src: BinaryIO, dst: BinaryIO, table: bytes, size: int) -> int
 # --------------------------------------------------------------------------- #
 # 头部解析
 # --------------------------------------------------------------------------- #
+
 
 def _read_exact(fp: BinaryIO, n: int, what: str) -> bytes:
     data = fp.read(n)
@@ -175,10 +177,10 @@ def _decode_key_block(key_raw: bytes) -> str:
         plain = aes.decrypt(key_raw)
         if not plain.startswith(KEY_PREFIX):
             raise NcmError("key 块解密后缺少 neteasecloudmusic 标识")
-        body = pkcs7_unpad(plain)[len(KEY_PREFIX):]
+        body = pkcs7_unpad(plain)[len(KEY_PREFIX) :]
         return body.rstrip(b"\x00").decode("ascii", "replace")
 
-    body = key_raw[len(KEY_PREFIX):]
+    body = key_raw[len(KEY_PREFIX) :]
     body = body[: len(body) - len(body) % 16]
     if not body:
         raise NcmError("key 块去掉前缀后不足一个 AES 分组")
@@ -191,7 +193,7 @@ def _decode_meta_block(meta_raw: bytes) -> dict:
     if not meta_raw:
         return {}
 
-    payload = meta_raw[len(META_B64_PREFIX):] if meta_raw.startswith(META_B64_PREFIX) else meta_raw
+    payload = meta_raw[len(META_B64_PREFIX) :] if meta_raw.startswith(META_B64_PREFIX) else meta_raw
     try:
         blob = base64.b64decode(payload, validate=False)
     except Exception as exc:  # noqa: BLE001 - 元数据坏了不该阻断音频提取
@@ -234,9 +236,9 @@ def _read_cover(fp: BinaryIO, total: int) -> tuple[int, int, str | None]:
         fp.seek(-4, 1)
         cover_len = first_len
     elif second_len == first_len and first_len <= total - fp.tell():
-        cover_len = second_len          # 新版客户端连写两遍长度
+        cover_len = second_len  # 新版客户端连写两遍长度
     else:
-        fp.seek(-4, 1)                  # 既非魔术字节也非重复长度 → 按单字段处理
+        fp.seek(-4, 1)  # 既非魔术字节也非重复长度 → 按单字段处理
         cover_len = first_len
 
     cover_off = fp.tell()
@@ -272,7 +274,7 @@ def _read_header(fp: BinaryIO, path: Path) -> tuple[NcmInfo, str]:
         try:
             meta = _decode_meta_block(meta_raw)
         except NcmError:
-            meta = {}   # 元数据解析失败不影响音频提取
+            meta = {}  # 元数据解析失败不影响音频提取
 
     fp.read(4)  # crc32
     fp.read(1)  # gap
@@ -312,6 +314,7 @@ def _read_header(fp: BinaryIO, path: Path) -> tuple[NcmInfo, str]:
 # 对外接口
 # --------------------------------------------------------------------------- #
 
+
 def guess_format(head: bytes) -> str | None:
     """从码流头 4 字节推断容器/编码格式。"""
     if head[:4] == b"fLaC":
@@ -339,7 +342,7 @@ def _peek_plain(fp: BinaryIO, info: NcmInfo, table: bytes, n: int = 4096) -> byt
     raw = fp.read(min(n, info.audio_size))
     if not raw:
         return b""
-    stream = (table * (len(raw) // len(table) + 1))[:len(raw)]
+    stream = (table * (len(raw) // len(table) + 1))[: len(raw)]
     mixed = int.from_bytes(raw, "little") ^ int.from_bytes(stream, "little")
     return mixed.to_bytes(len(raw), "little")
 

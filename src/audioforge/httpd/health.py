@@ -42,42 +42,45 @@ def ready(h) -> None:
     if jobs_dir.is_dir():
         h._json({"ok": True, "ready": True})
     else:
-        h._json({"ok": False, "ready": False,
-                 "error": f"工作目录不可用：{jobs_dir}"},
-                status=HTTPStatus.SERVICE_UNAVAILABLE)
+        h._json(
+            {"ok": False, "ready": False, "error": f"工作目录不可用：{jobs_dir}"},
+            status=HTTPStatus.SERVICE_UNAVAILABLE,
+        )
 
 
 def health(h) -> None:
     srv = h.server
     cfg = srv.cfg
     guard = srv.guard
-    h._json({
-        "ok": True,
-        "version": __version__,
-        "ffmpeg": srv.ffmpeg_version,
-        "capabilities": {
-            "ncm": True,
-            "transcode": bool(srv.ffmpeg),
-        },
-        "formats": sorted(transcode.FORMATS),
-        "limits": {
-            "max_upload_mb": round(cfg.max_bytes / (1 << 20)),
-            "max_output_mb": cfg.max_out_mb,
-            "job_ttl_minutes": round(cfg.ttl / 60),
-            "quota": guard.limits.as_dict(),
-        },
-        "server": {
-            "conn_timeout_s": cfg.conn_timeout,
-            "concurrency": cfg.concurrency,
-            "download_slots": cfg.slots_for_download,
-            "trust_proxy": cfg.trust_proxy,
-        },
-        "auth": {
-            "mode": guard.mode,
-            "usage": guard.usage(h._client_ip()),
-            "disk_mb": round(guard.disk_usage_mb(), 1),
-        },
-    })
+    h._json(
+        {
+            "ok": True,
+            "version": __version__,
+            "ffmpeg": srv.ffmpeg_version,
+            "capabilities": {
+                "ncm": True,
+                "transcode": bool(srv.ffmpeg),
+            },
+            "formats": sorted(transcode.FORMATS),
+            "limits": {
+                "max_upload_mb": round(cfg.max_bytes / (1 << 20)),
+                "max_output_mb": cfg.max_out_mb,
+                "job_ttl_minutes": round(cfg.ttl / 60),
+                "quota": guard.limits.as_dict(),
+            },
+            "server": {
+                "conn_timeout_s": cfg.conn_timeout,
+                "concurrency": cfg.concurrency,
+                "download_slots": cfg.slots_for_download,
+                "trust_proxy": cfg.trust_proxy,
+            },
+            "auth": {
+                "mode": guard.mode,
+                "usage": guard.usage(h._client_ip()),
+                "disk_mb": round(guard.disk_usage_mb(), 1),
+            },
+        }
+    )
 
 
 def job_status(h, route: str) -> None:

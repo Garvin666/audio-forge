@@ -57,10 +57,10 @@ class Denied(Exception):
 class Limits:
     """配额阈值。数值 ``<= 0`` 表示该项不限制。"""
 
-    per_minute: int = 120          # 每 IP 每分钟请求数
-    files_per_day: int = 2000      # 每 IP 每日转换文件数
-    mb_per_day: int = 20 * 1024    # 每 IP 每日上传总量（MiB）
-    disk_mb: int = 20 * 1024       # jobs 目录总量上限（MiB），超了先清最旧
+    per_minute: int = 120  # 每 IP 每分钟请求数
+    files_per_day: int = 2000  # 每 IP 每日转换文件数
+    mb_per_day: int = 20 * 1024  # 每 IP 每日上传总量（MiB）
+    disk_mb: int = 20 * 1024  # jobs 目录总量上限（MiB），超了先清最旧
 
     @classmethod
     def unlimited(cls) -> Limits:
@@ -96,7 +96,7 @@ class Guard:
     token: str | None = None
     limits: Limits = field(default_factory=Limits)
     jobs_dir: Path | None = None
-    clock: Callable[[], float] = time.time          # 测试注入
+    clock: Callable[[], float] = time.time  # 测试注入
     max_buckets: int = MAX_BUCKETS
     prune_every: float = PRUNE_EVERY
     _buckets: dict = field(default_factory=dict, repr=False)
@@ -210,8 +210,9 @@ class Guard:
                 b.minute_start, b.minute_count = now, 0
             if b.minute_count >= limit:
                 retry = max(1, int(MINUTE - (now - b.minute_start)) + 1)
-                raise Denied(429, f"请求过于频繁：每 IP 每分钟上限 {limit} 次",
-                             {"Retry-After": str(retry)})
+                raise Denied(
+                    429, f"请求过于频繁：每 IP 每分钟上限 {limit} 次", {"Retry-After": str(retry)}
+                )
             b.minute_count += 1
 
     def check_quota(self, ip: str, n_bytes: int = 0, n_files: int = 1) -> None:
@@ -316,7 +317,7 @@ class Guard:
                     continue
 
             jobs.sort(key=lambda item: item[0])
-            target = cap_bytes * 0.8             # 留 20% 余量，避免每来一个请求就清一次
+            target = cap_bytes * 0.8  # 留 20% 余量，避免每来一个请求就清一次
             freed = 0
             for _, size, entry in jobs:
                 if used - freed <= target:

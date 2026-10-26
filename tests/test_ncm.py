@@ -73,8 +73,8 @@ def build_ncm(
     out += MAGIC + GAP
     out += struct.pack("<I", len(key_block)) + key_block
     out += struct.pack("<I", len(meta_block)) + meta_block
-    out += struct.pack("<I", 0)     # crc32 占位
-    out += b"\x00"                  # gap
+    out += struct.pack("<I", 0)  # crc32 占位
+    out += b"\x00"  # gap
     if cover:
         out += struct.pack("<I", len(cover))
         if dup_cover_len:
@@ -144,7 +144,7 @@ class TestProbe(unittest.TestCase):
         self.assertIsNone(info.music_name)
         self.assertEqual(info.artists, [])
         self.assertEqual(info.cover_size, 0)
-        self.assertEqual(info.fmt, "mp3")   # 由码流头推断
+        self.assertEqual(info.fmt, "mp3")  # 由码流头推断
 
     def test_rejects_non_ncm(self):
         p = self._write("bad.ncm", b"ID3\x03\x00" + b"\x00" * 100)
@@ -246,15 +246,15 @@ class TestAtomicWrite(unittest.TestCase):
         src.write_bytes(build_ncm(fake_audio(20_000), meta=META))
 
         def explode(fp, dst, table, size):
-            dst.write(b"\x00" * 512)        # 已经写了一半
+            dst.write(b"\x00" * 512)  # 已经写了一半
             raise OSError("disk full")
 
         patched = mock.patch.object(ncm_mod, "_xor_keystream", explode)
         with patched, self.assertRaises(OSError):
             decrypt(src, self.dir)
 
-        self.assertFalse((self.dir / "boom.mp3").exists())      # 不能留「看着像成品」的
-        self.assertEqual(list(self.dir.glob("*.part")), [])     # 也不能留临时件
+        self.assertFalse((self.dir / "boom.mp3").exists())  # 不能留「看着像成品」的
+        self.assertEqual(list(self.dir.glob("*.part")), [])  # 也不能留临时件
 
 
 class TestSizeCheck(unittest.TestCase):
@@ -280,9 +280,9 @@ class TestSizeCheck(unittest.TestCase):
     def test_truncated_file_is_flagged_but_still_produced(self):
         blob = build_ncm(fake_audio(500_000), meta=META)
         src = self.dir / "cut.ncm"
-        src.write_bytes(blob[: len(blob) - 380_000])       # 尾部被砍掉
+        src.write_bytes(blob[: len(blob) - 380_000])  # 尾部被砍掉
 
-        out, info = decrypt(src, self.dir)                  # 不抛错：仍产出
+        out, info = decrypt(src, self.dir)  # 不抛错：仍产出
         self.assertTrue(out.is_file())
         self.assertFalse(info.size_check["consistent"])
         self.assertLess(info.size_check["ratio"], 0.5)

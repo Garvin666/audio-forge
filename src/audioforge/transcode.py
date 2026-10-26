@@ -51,17 +51,27 @@ class TargetFormat:
 
 
 FORMATS: dict[str, TargetFormat] = {
-    "mp3": TargetFormat("mp3", ".mp3", "libmp3lame", True, (128, 192, 320),
-                        note="兼容性最好，有损"),
-    "flac": TargetFormat("flac", ".flac", "flac", False,
-                         extra=("-compression_level", "5"), note="无损压缩"),
+    "mp3": TargetFormat(
+        "mp3", ".mp3", "libmp3lame", True, (128, 192, 320), note="兼容性最好，有损"
+    ),
+    "flac": TargetFormat(
+        "flac", ".flac", "flac", False, extra=("-compression_level", "5"), note="无损压缩"
+    ),
     "wav": TargetFormat("wav", ".wav", "pcm_s16le", False, note="无损未压缩，体积大"),
-    "m4a": TargetFormat("m4a", ".m4a", "aac", True, (96, 160, 256),
-                        extra=("-movflags", "+faststart"), note="AAC 封装，苹果生态友好"),
+    "m4a": TargetFormat(
+        "m4a",
+        ".m4a",
+        "aac",
+        True,
+        (96, 160, 256),
+        extra=("-movflags", "+faststart"),
+        note="AAC 封装，苹果生态友好",
+    ),
     "aac": TargetFormat("aac", ".aac", "aac", True, (96, 160, 256), note="裸 AAC（ADTS）"),
     "ogg": TargetFormat("ogg", ".ogg", "libvorbis", True, (112, 160, 224), note="Ogg Vorbis"),
-    "opus": TargetFormat("opus", ".opus", "libopus", True, (64, 96, 160),
-                         note="低码率高音质，语音/流媒体首选"),
+    "opus": TargetFormat(
+        "opus", ".opus", "libopus", True, (64, 96, 160), note="低码率高音质，语音/流媒体首选"
+    ),
     "alac": TargetFormat("alac", ".m4a", "alac", False, note="苹果无损"),
     "aiff": TargetFormat("aiff", ".aiff", "pcm_s16be", False, note="未压缩，专业音频交换"),
 }
@@ -113,7 +123,9 @@ def ffmpeg_version(ffmpeg: str | None = None) -> str | None:
     try:
         out = subprocess.run(
             [exe, "-hide_banner", "-version"],
-            capture_output=True, text=True, timeout=20,
+            capture_output=True,
+            text=True,
+            timeout=20,
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -149,9 +161,7 @@ def convert(
     target = target.lower().lstrip(".")
     fmt = FORMATS.get(target)
     if fmt is None:
-        raise TranscodeError(
-            f"不支持的目标格式 {target!r}；可选：{', '.join(sorted(FORMATS))}"
-        )
+        raise TranscodeError(f"不支持的目标格式 {target!r}；可选：{', '.join(sorted(FORMATS))}")
 
     exe = ffmpeg or find_ffmpeg()
     if not exe:

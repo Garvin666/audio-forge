@@ -56,12 +56,14 @@ class JobRegistry:
             item["done"] += 1
             if not result.get("ok"):
                 item["failed"] += 1
-            item["items"].append({
-                "source": result.get("source"),
-                "ok": bool(result.get("ok")),
-                "name": result.get("name"),
-                "error": result.get("error"),
-            })
+            item["items"].append(
+                {
+                    "source": result.get("source"),
+                    "ok": bool(result.get("ok")),
+                    "name": result.get("name"),
+                    "error": result.get("error"),
+                }
+            )
 
     def finish(self, key: str, error: str | None = None) -> None:
         now = self.clock()
@@ -100,7 +102,8 @@ class JobRegistry:
 
     def _prune_locked(self, now: float) -> None:
         dead = [
-            k for k, v in self._items.items()
+            k
+            for k, v in self._items.items()
             if v["finished_at"] is not None and now - v["finished_at"] > self.ttl
         ]
         for k in dead:

@@ -23,7 +23,7 @@ _RANGE = re.compile(r"^bytes=(\d*)-(\d*)$")
 
 
 def handle(h, route: str) -> None:
-    pieces = route.split("/", 4)          # ['', 'api', 'file', token, name]
+    pieces = route.split("/", 4)  # ['', 'api', 'file', token, name]
     if len(pieces) != 5:
         h._error(HTTPStatus.BAD_REQUEST, "下载路径非法")
         return
@@ -41,8 +41,11 @@ def handle(h, route: str) -> None:
     try:
         start, end, partial = _parse_range(h.headers.get("Range"), size)
     except ValueError:
-        h._error(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE, "Range 超出文件范围",
-                 {"Content-Range": f"bytes */{size}"})
+        h._error(
+            HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE,
+            "Range 超出文件范围",
+            {"Content-Range": f"bytes */{size}"},
+        )
         return
 
     length = end - start + 1 if size else 0
@@ -97,7 +100,7 @@ def _parse_range(header: str | None, size: int) -> tuple[int, int, bool]:
     if not first and not last:
         return 0, max(0, size - 1), False
 
-    if not first:                       # bytes=-N 取尾部
+    if not first:  # bytes=-N 取尾部
         suffix = int(last)
         if suffix <= 0 or size == 0:
             raise ValueError("empty suffix")

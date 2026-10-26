@@ -106,7 +106,7 @@ box = list(range(256))
 j = 0
 for i in range(256):
     j = (j + box[i] + ord(k[i % n])) & 0xFF
-    box[i], box[j] = box[j], box[i]      # 标准 RC4 KSA
+    box[i], box[j] = box[j], box[i]  # 标准 RC4 KSA
 ```
 
 关键点：PRGA 的第 `i` 个字节只取决于 `i % 256`，因为位置索引本来就 `& 0xFF`。
@@ -153,23 +153,26 @@ raw = open("song.ncm", "rb").read()
 assert raw[:8] == b"CTENFDAM"
 pos = 10
 
-n = struct.unpack("<I", raw[pos:pos + 4])[0]; pos += 4
-key = AES128ECB(CORE_KEY).decrypt(bytes(b ^ 0x64 for b in raw[pos:pos + n]))
-key = pkcs7_unpad(key)[17:].rstrip(b"\x00").decode()      # 跳过 neteasecloudmusic 前缀
+n = struct.unpack("<I", raw[pos : pos + 4])[0]
+pos += 4
+key = AES128ECB(CORE_KEY).decrypt(bytes(b ^ 0x64 for b in raw[pos : pos + n]))
+key = pkcs7_unpad(key)[17:].rstrip(b"\x00").decode()  # 跳过 neteasecloudmusic 前缀
 pos += n
 
-n = struct.unpack("<I", raw[pos:pos + 4])[0]; pos += 4
+n = struct.unpack("<I", raw[pos : pos + 4])[0]
+pos += 4
 meta = b""
 if n:
-    body = bytes(b ^ 0x63 for b in raw[pos:pos + n])[22:]
+    body = bytes(b ^ 0x63 for b in raw[pos : pos + n])[22:]
     meta = json.loads(pkcs7_unpad(AES128ECB(META_KEY).decrypt(base64.b64decode(body)))[6:])
 pos += n
 
-pos += 4 + 1                                              # crc32 + gap
-n = struct.unpack("<I", raw[pos:pos + 4])[0]; pos += 4
-if n and struct.unpack("<I", raw[pos:pos + 4])[0] == n:    # 新版把长度写了两遍
+pos += 4 + 1  # crc32 + gap
+n = struct.unpack("<I", raw[pos : pos + 4])[0]
+pos += 4
+if n and struct.unpack("<I", raw[pos : pos + 4])[0] == n:  # 新版把长度写了两遍
     pos += 4
-pos += n                                                  # 跳过封面
+pos += n  # 跳过封面
 
 table = keystream_table(key)
 audio = bytes(raw[pos + i] ^ table[i % 256] for i in range(len(raw) - pos))

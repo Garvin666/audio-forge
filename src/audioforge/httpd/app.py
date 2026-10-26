@@ -52,7 +52,9 @@ class AppServer(ThreadingHTTPServer):
         if self._cleaner is not None:
             return
         self._cleaner = threading.Thread(
-            target=_cleaner, args=(self.cfg, self.guard, self._cleaner_stop), daemon=True,
+            target=_cleaner,
+            args=(self.cfg, self.guard, self._cleaner_stop),
+            daemon=True,
         )
         self._cleaner.start()
 

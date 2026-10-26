@@ -28,7 +28,7 @@ def run(argv: list[str]) -> tuple[int, str, str]:
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         try:
             code = main(argv)
-        except SystemExit as exc:            # --version / 参数错误走这里
+        except SystemExit as exc:  # --version / 参数错误走这里
             code = int(exc.code or 0)
     return code, out.getvalue(), err.getvalue()
 
@@ -57,11 +57,22 @@ class TestParser(unittest.TestCase):
 
     def test_new_serve_flags_are_accepted(self):
         # 只解析，不执行：这里拿 parser 直接看 namespace，避免起服务
-        ns = build_parser().parse_args([
-            "serve", "--trust-proxy", "--trusted-proxy", "10.0.0.0/8",
-            "--conn-timeout", "15", "--concurrency", "2",
-            "--download-slots", "4", "--max-out-mb", "512",
-        ])
+        ns = build_parser().parse_args(
+            [
+                "serve",
+                "--trust-proxy",
+                "--trusted-proxy",
+                "10.0.0.0/8",
+                "--conn-timeout",
+                "15",
+                "--concurrency",
+                "2",
+                "--download-slots",
+                "4",
+                "--max-out-mb",
+                "512",
+            ]
+        )
         self.assertTrue(ns.trust_proxy)
         self.assertEqual(ns.trusted_proxy, "10.0.0.0/8")
         self.assertEqual(ns.conn_timeout, 15)
@@ -146,7 +157,7 @@ class TestOfflineCommands(unittest.TestCase):
         cut = self.root / "cut.ncm"
         cut.write_bytes(blob[: len(blob) - 380_000])
         code, _, err = run(["ncm", str(cut), "-o", str(self.root / "o2")])
-        self.assertEqual(code, 0)              # 只告警，不当失败
+        self.assertEqual(code, 0)  # 只告警，不当失败
         self.assertIn("[WARN]", err)
         self.assertIn("截断", err)
 

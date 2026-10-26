@@ -16,6 +16,7 @@ __all__ = ["AES128ECB", "pkcs7_unpad", "pkcs7_pad"]
 # GF(2^8) 与 S-box
 # --------------------------------------------------------------------------- #
 
+
 def _gmul(a: int, b: int) -> int:
     """GF(2^8) 乘法，既约多项式 0x11B（x^8 + x^4 + x^3 + x + 1）。"""
     r = 0
@@ -53,14 +54,7 @@ def _build_tables() -> tuple[tuple[int, ...], tuple[int, ...]]:
     for v in range(256):
         # v 的乘法逆元：0 约定为 0
         inv = 0 if v == 0 else exp[255 - log[v]]
-        sbox[v] = (
-            inv
-            ^ _rotl8(inv, 1)
-            ^ _rotl8(inv, 2)
-            ^ _rotl8(inv, 3)
-            ^ _rotl8(inv, 4)
-            ^ 0x63
-        )
+        sbox[v] = inv ^ _rotl8(inv, 1) ^ _rotl8(inv, 2) ^ _rotl8(inv, 3) ^ _rotl8(inv, 4) ^ 0x63
 
     inv_sbox = [0] * 256
     for i, v in enumerate(sbox):
@@ -86,23 +80,24 @@ RCON = (0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1B, 0x36)
 # 轮函数
 # --------------------------------------------------------------------------- #
 
+
 def _expand_key(key: bytes) -> list[list[int]]:
     """AES-128 密钥扩展，返回 11 组轮密钥，每组 16 字节（列主序展平）。"""
     if len(key) != 16:
         raise ValueError(f"AES-128 需要 16 字节密钥，收到 {len(key)}")
-    words = [list(key[i:i + 4]) for i in range(0, 16, 4)]
+    words = [list(key[i : i + 4]) for i in range(0, 16, 4)]
     for i in range(4, 44):
         temp = list(words[i - 1])
         if i % 4 == 0:
-            temp = temp[1:] + temp[:1]                       # RotWord
-            temp = [SBOX[b] for b in temp]                   # SubWord
+            temp = temp[1:] + temp[:1]  # RotWord
+            temp = [SBOX[b] for b in temp]  # SubWord
             temp[0] ^= RCON[i // 4 - 1]
         words.append([words[i - 4][j] ^ temp[j] for j in range(4)])
     # 44 字 → 11 组 16 字节
     rounds = []
     for r in range(11):
         flat: list[int] = []
-        for w in words[r * 4:r * 4 + 4]:
+        for w in words[r * 4 : r * 4 + 4]:
             flat.extend(w)
         rounds.append(flat)
     return rounds
@@ -128,7 +123,7 @@ def _inv_sub_bytes(state: list[int]) -> None:
 
 def _inv_mix_columns(state: list[int]) -> None:
     for c in range(4):
-        a0, a1, a2, a3 = state[4 * c:4 * c + 4]
+        a0, a1, a2, a3 = state[4 * c : 4 * c + 4]
         state[4 * c + 0] = _MUL14[a0] ^ _MUL11[a1] ^ _MUL13[a2] ^ _MUL9[a3]
         state[4 * c + 1] = _MUL9[a0] ^ _MUL14[a1] ^ _MUL11[a2] ^ _MUL13[a3]
         state[4 * c + 2] = _MUL13[a0] ^ _MUL9[a1] ^ _MUL14[a2] ^ _MUL11[a3]
@@ -153,6 +148,7 @@ def _decrypt_block(block: bytes, round_keys: list[list[int]]) -> bytes:
 
 # --- 正向轮函数：只用于自测与构造 fixture，工具本身不加密任何文件 --- #
 
+
 def _shift_rows(state: list[int]) -> None:
     for r in (1, 2, 3):
         row = [state[r + 4 * c] for c in range(4)]
@@ -167,7 +163,7 @@ def _sub_bytes(state: list[int]) -> None:
 
 def _mix_columns(state: list[int]) -> None:
     for c in range(4):
-        a0, a1, a2, a3 = state[4 * c:4 * c + 4]
+        a0, a1, a2, a3 = state[4 * c : 4 * c + 4]
         state[4 * c + 0] = _MUL2[a0] ^ _MUL3[a1] ^ a2 ^ a3
         state[4 * c + 1] = a0 ^ _MUL2[a1] ^ _MUL3[a2] ^ a3
         state[4 * c + 2] = a0 ^ a1 ^ _MUL2[a2] ^ _MUL3[a3]
@@ -193,6 +189,7 @@ def _encrypt_block(block: bytes, round_keys: list[list[int]]) -> bytes:
 # --------------------------------------------------------------------------- #
 # 对外接口
 # --------------------------------------------------------------------------- #
+
 
 def pkcs7_unpad(data: bytes, strict: bool = False) -> bytes:
     """去 PKCS#7 补位。
@@ -234,7 +231,7 @@ class AES128ECB:
         out = bytearray(len(data))
         rks = self._round_keys
         for off in range(0, len(data), 16):
-            out[off:off + 16] = _decrypt_block(data[off:off + 16], rks)
+            out[off : off + 16] = _decrypt_block(data[off : off + 16], rks)
         return bytes(out)
 
     def decrypt_unpadded(self, data: bytes) -> bytes:
@@ -248,7 +245,7 @@ class AES128ECB:
         out = bytearray(len(data))
         rks = self._round_keys
         for off in range(0, len(data), 16):
-            out[off:off + 16] = _encrypt_block(data[off:off + 16], rks)
+            out[off : off + 16] = _encrypt_block(data[off : off + 16], rks)
         return bytes(out)
 
     def encrypt_padded(self, data: bytes) -> bytes:

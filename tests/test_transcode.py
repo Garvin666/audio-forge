@@ -30,10 +30,23 @@ class TestConvert(unittest.TestCase):
         cls.dir = Path(cls.tmp.name)
         cls.wav = cls.dir / "tone.wav"
         subprocess.run(
-            [FFMPEG, "-hide_banner", "-loglevel", "error", "-y",
-             "-f", "lavfi", "-i", "sine=frequency=440:duration=0.6:sample_rate=44100",
-             "-ac", "2", str(cls.wav)],
-            check=True, capture_output=True, timeout=60,
+            [
+                FFMPEG,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=0.6:sample_rate=44100",
+                "-ac",
+                "2",
+                str(cls.wav),
+            ],
+            check=True,
+            capture_output=True,
+            timeout=60,
         )
 
     @classmethod
@@ -98,6 +111,7 @@ class TestInvocation(unittest.TestCase):
         def run(cmd, **kw):
             Path(cmd[-1]).write_bytes(b"\x00" * size)
             return subprocess.CompletedProcess(cmd, code, "", "")
+
         return mock.patch("audioforge.transcode.subprocess.run", side_effect=run)
 
     def test_fs_flag_goes_before_output(self):
@@ -106,7 +120,7 @@ class TestInvocation(unittest.TestCase):
         cmd = run.call_args.args[0]
         self.assertIn("-fs", cmd)
         self.assertEqual(cmd[cmd.index("-fs") + 1], str(1 << 20))
-        self.assertLess(cmd.index("-fs"), len(cmd) - 1)      # 必须作为输出选项
+        self.assertLess(cmd.index("-fs"), len(cmd) - 1)  # 必须作为输出选项
 
     def test_no_cap_means_no_fs_flag(self):
         with self._fake() as run:

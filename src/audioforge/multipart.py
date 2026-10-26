@@ -142,9 +142,9 @@ def parse_multipart(
 
             index = 0
             while True:
-                if mm[cursor:cursor + 2] == b"--":      # 收尾标记 --boundary--
+                if mm[cursor : cursor + 2] == b"--":  # 收尾标记 --boundary--
                     break
-                if mm[cursor:cursor + 2] == b"\r\n":
+                if mm[cursor : cursor + 2] == b"\r\n":
                     cursor += 2
 
                 nxt = mm.find(sep, cursor)
@@ -215,6 +215,6 @@ def _read_part(
     return Part(
         name=name,
         content_type=headers.get("content-type"),
-        value=bytes(mm[body_start:body_start + body_len]),
+        value=bytes(mm[body_start : body_start + body_len]),
         size=body_len,
     )

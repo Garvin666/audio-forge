@@ -28,7 +28,7 @@ def build_body(parts: list[dict], closing: bool = True) -> bytes:
             disp += f'; filename="{p["filename"]}"'
         out += disp.encode("utf-8") + b"\r\n"
         if "ctype" in p:
-            out += f'Content-Type: {p["ctype"]}\r\n'.encode()
+            out += f"Content-Type: {p['ctype']}\r\n".encode()
         out += b"\r\n"
         out += p["data"]
         out += b"\r\n"
@@ -87,11 +87,17 @@ class TestParse(unittest.TestCase):
         return parse_multipart(self.spool, BOUNDARY, self.dest)
 
     def test_field_and_file(self):
-        body = build_body([
-            {"name": "target", "data": b"mp3"},
-            {"name": "files", "filename": "song.ncm", "ctype": "application/octet-stream",
-             "data": b"\x00\x01\x02" * 100},
-        ])
+        body = build_body(
+            [
+                {"name": "target", "data": b"mp3"},
+                {
+                    "name": "files",
+                    "filename": "song.ncm",
+                    "ctype": "application/octet-stream",
+                    "data": b"\x00\x01\x02" * 100,
+                },
+            ]
+        )
         parts = self._parse(body)
         self.assertEqual(len(parts), 2)
 
@@ -105,20 +111,24 @@ class TestParse(unittest.TestCase):
         self.assertEqual(f.path.read_bytes(), b"\x00\x01\x02" * 100)
 
     def test_multiple_files_keep_names(self):
-        body = build_body([
-            {"name": "files", "filename": "a.mp3", "data": b"A" * 10},
-            {"name": "files", "filename": "b.flac", "data": b"B" * 20},
-        ])
+        body = build_body(
+            [
+                {"name": "files", "filename": "a.mp3", "data": b"A" * 10},
+                {"name": "files", "filename": "b.flac", "data": b"B" * 20},
+            ]
+        )
         parts = self._parse(body)
         self.assertEqual([p.filename for p in parts], ["a.mp3", "b.flac"])
         self.assertEqual(parts[0].path.name, "a.mp3")
         self.assertEqual(parts[1].path.read_bytes(), b"B" * 20)
 
     def test_duplicate_names_get_suffix(self):
-        body = build_body([
-            {"name": "files", "filename": "same.mp3", "data": b"A"},
-            {"name": "files", "filename": "same.mp3", "data": b"B"},
-        ])
+        body = build_body(
+            [
+                {"name": "files", "filename": "same.mp3", "data": b"A"},
+                {"name": "files", "filename": "same.mp3", "data": b"B"},
+            ]
+        )
         parts = self._parse(body)
         self.assertNotEqual(parts[0].path, parts[1].path)
         self.assertEqual(parts[1].path.name, "same-1.mp3")
@@ -136,7 +146,7 @@ class TestParse(unittest.TestCase):
         self.assertEqual(part.filename, "evil.mp3")
 
     def test_binary_payload_preserved(self):
-        payload = bytes(range(256)) * 512        # 128 KiB，跨内部拷贝块
+        payload = bytes(range(256)) * 512  # 128 KiB，跨内部拷贝块
         body = build_body([{"name": "files", "filename": "big.bin", "data": payload}])
         part = self._parse(body)[0]
         self.assertEqual(part.path.read_bytes(), payload)

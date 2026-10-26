@@ -83,7 +83,7 @@ RUN set -eu; \
 # --------------------------------------------------------------------------- #
 # 阶段二：运行时
 # --------------------------------------------------------------------------- #
-FROM python:3.12-alpine
+FROM python:3.15-alpine
 
 COPY --from=ffmpeg-src /usr/local/bin/ffmpeg /usr/local/bin/ffmpeg
 

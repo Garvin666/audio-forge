@@ -39,6 +39,14 @@
 - 工程化护栏：`ruff`（`E,F,W,I,UP,B,SIM`）、`mypy`（`check_untyped_defs`）、
   `coverage`（门限 80%）、`.pre-commit-config.yaml`、Dependabot、
   `SECURITY.md`、本文件、issue 模板；CI 的 action 全部固定到 commit SHA。
+- **ID3v2.3 标签回写**（`ncm --tags` / `POST /api/convert` 的 `tags=1` / 网页勾选框）：
+  纯 Python 构造 `TIT2`/`TPE1`/`TALB`/`APIC`（封面），**前置**到 mp3 码流前面。
+  **默认关闭** —— 主卖点是「码流逐字节还原」，写标签是显式选择；flac 不写（该用
+  Vorbis comment），文件自带 ID3 头时不重复写，封面超 8 MiB 跳过。
+- `GET /api/stats`：运维视角的运行指标（`uptime_s` / `jobs` 各状态条数 / 见过的 IP 数 /
+  磁盘用量 / 限额 / ffmpeg / 鉴权模式）。全部取自内存计数，不遍历目录、不起子进程。
+  与 `/api/health`（「这个实例能干什么」）分工不同，这个回答「现在怎么样」。
+- CI 矩阵加 **Python 3.14**，`pyproject.toml` 的 classifiers 同步。
 
 ### 变更
 
@@ -54,15 +62,27 @@
   `{"ok": false, "error": "服务器内部错误", "id": "<request-id>"}` + `X-Request-Id`，
   细节只进服务端日志。
 - **单产物有体积上限**：`ffmpeg -fs` 先兜住，落盘后再核一次大小，超限即丢弃产物并报错。
-- **Docker 镜像 832 MB → 279 MB**：基础镜像换成 `python:3.12-alpine`，ffmpeg 改由 apk 提供
-  （debian 下 `apt install ffmpeg` 会连带拉进 449 MB 的 libav* 依赖树）。构建参数新增
-  `APK_MIRROR` / `PIP_INDEX_URL`（替代原来的 `APT_MIRROR`），国内网络不加会慢到像卡死。
-  加固跑法不变，已在 `--read-only --tmpfs /tmp --cap-drop ALL --no-new-privileges` 下复验
-  解密 / 转码 / Range / 416 全通。⚠️ musl 下 `imageio-ffmpeg` 自带的 glibc 二进制不可用
-  （本项目不装它，且 `find_ffmpeg()` 先查 PATH）。
+- **Docker 镜像 832 MB → 202 MB**（两段式）：基础镜像从 debian-slim 换成
+  `python:3.12-alpine`（debian 下 `apt install ffmpeg` 会连带拉进 449 MB 的 libav* 依赖树），
+  ffmpeg 不再走 `apk add`（`ffmpeg-libs` 是 189 MB 的单体，`libx265`/`libaom`/`libvpx`
+  全是 `libavcodec` 的 `DT_NEEDED`，删不掉），改为**多阶段构建 + COPY 静态 ffmpeg 单文件**
+  （79.8 MB，连 libc 都不需要，musl 下照跑）。amd64 / arm64 两个包按 `TARGETARCH` 自动选，
+  **SHA256 钉在 Dockerfile 里**，上游换包会直接构建失败而不是悄悄换二进制。
+  构建参数：`APK_MIRROR` / `PIP_INDEX_URL` / `FFMPEG_URL` / `FFMPEG_SHA256`。
+  加固跑法不变，已在 `--read-only --tmpfs /tmp --cap-drop ALL --security-opt
+  no-new-privileges` 下复验解密（含 ID3）/ 转码 / Range / 416 / `/api/stats` 全通。
+  ⚠️ 代价两条：镜像内 ffmpeg 是 7.0.2（apk 给的是 8.x），且**没有 `ffprobe`**（本项目不调它）。
+- **代码全量过一遍 `ruff format`**（23 个文件，纯格式、零逻辑改动），并在 CI 与
+  pre-commit 里卡住格式，避免「格式化提交」和「功能提交」混在一起。
 
 ### 修复
 
+- **上传被截断不再静默成功**：`multipart` 解析要求请求体以 `--boundary--` 收尾，
+  缺了就按「被截断」回 400。此前 `find()` 找不到下一个分隔符时会把剩下的字节当成
+  最后一个 part 落盘 —— 产出一个「能过、内容却是半截」的文件，比直接报错难查得多。
+- **恶意文件名多挡两类**：Windows 保留设备名（`CON`/`PRN`/`AUX`/`NUL`/`COM1-9`/`LPT1-9`，
+  带扩展名同样算）加 `_` 前缀；文件名里的尾点/尾空格（NTFS 会静默吃掉，导致与本批
+  同名文件相撞而 `exists()` 看不出来）在清洗阶段直接去掉。
 - **截断的 `.ncm` 不再静默产出半截文件**：解密先写 `<name>.<fmt>.part` 再原子改名；
   中途失败（含磁盘满、Ctrl+C）不留半成品。同时用「元数据时长 × 码率」推算应得体积做对照，
   偏差超过 0.5–2.0 倍区间时打 `[WARN]`（**只告警不阻断** —— 这是启发式，不是校验和）。
@@ -86,10 +106,12 @@
 
 ### 测试
 
-- 用例数 **110 → 215**；覆盖率 **83%**（`--fail-under=80`）。
+- 用例数 **110 → 250**；覆盖率 **84%**（`--fail-under=80`）。
 - 新增回归：日志脱敏、批量上传配额、`Range`/`206`/`416`/`HEAD`、`ETag`/`304`、
   job 轮询、`/api/ready` 的 503、XFF 信任模型、`.part` 原子写、体积对照告警、
-  `-fs` 参数位置与超限清理、`JobRegistry` 淘汰策略、磁盘计数缓存、CLI 退出码。
+  `-fs` 参数位置与超限清理、`JobRegistry` 淘汰策略、磁盘计数缓存、CLI 退出码、
+  ID3 标签逐字节布局（自带最小解析器回读）、multipart 截断请求体、
+  `/api/stats` 字段与鉴权、`tags=1` 端到端。
 
 ## [1.0.0] — 2026-10-26（初始版本）
 

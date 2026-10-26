@@ -11,8 +11,8 @@ Python 依赖**（`pip` 不会下载任何东西）。唯一的可选外部依�
 <img alt="python" src="https://img.shields.io/badge/python-3.9%2B-3776ab">
 <img alt="deps" src="https://img.shields.io/badge/dependencies-0-brightgreen">
 <img alt="license" src="https://img.shields.io/badge/license-MIT-blue">
-<img alt="tests" src="https://img.shields.io/badge/tests-215%20passed-brightgreen">
-<img alt="coverage" src="https://img.shields.io/badge/coverage-83%25-green">
+<img alt="tests" src="https://img.shields.io/badge/tests-250%20passed-brightgreen">
+<img alt="coverage" src="https://img.shields.io/badge/coverage-84%25-green">
 </p>
 
 ![上传页](docs/screenshot.png)
@@ -60,8 +60,10 @@ docker run --rm -p 127.0.0.1:8000:8000 -v "$PWD/data:/data" audio-forge
 
 或 `docker compose up -d`（`docker-compose.yml` 默认只绑回环地址）。
 
-镜像基于 `python:3.12-alpine`，**279 MB**（debian 方案要 832 MB：`apt install ffmpeg` 会连带
-拉进 449 MB 的 libav* 依赖树）。构建时可按需换源：
+镜像基于 `python:3.12-alpine` + **静态 ffmpeg 单文件**，`docker images` 报 **202 MB**
+（debian 方案要 832 MB：`apt install ffmpeg` 会连带拉进 449 MB 的 libav* 依赖树；
+alpine 的 `apk add ffmpeg` 也要 279 MB —— `x265`/`aom`/`vpx` 全是 `libavcodec`
+的硬依赖，删不掉）。构建时可按需换源：
 
 ```bash
 docker build --build-arg APK_MIRROR=mirrors.aliyun.com \
@@ -69,9 +71,15 @@ docker build --build-arg APK_MIRROR=mirrors.aliyun.com \
              -t audio-forge .
 ```
 
-镜像已实测跑通：`.ncm` 解密与 mp3→flac 转码都在容器里验过，输出与真机逐字节一致；
-`/data` 卷重启不丢，`--read-only --cap-drop ALL --no-new-privileges` 下上传/解密/下载全通。
-构建若卡在 apk 下载，见 [docs/DEPLOY.md §2.2](docs/DEPLOY.md)。
+镜像里的 ffmpeg 是 **7.0.2-static**（johnvansickle 的 amd64 静态构建，SHA256 钉在
+`Dockerfile` 里）。代价是没有 `ffprobe`、版本比 apk 的 8.x 旧一代；要新的就在自己
+的 Dockerfile 里 `FROM audio-forge` 再 `apk add --no-cache ffmpeg`（`/usr/local/bin`
+优先于 `/usr/bin`，加完即生效，体积 +189 MB）。
+
+镜像已实测跑通：`.ncm` 解密（含 `--tags` 写 ID3）与 mp3→flac 转码都在容器里验过，
+输出与真机逐字节一致；`/data` 卷重启不丢，`--read-only --cap-drop ALL
+--security-opt no-new-privileges` 下上传/解密/下载/Range 全通。
+构建若卡在下载，见 [docs/DEPLOY.md §2.2](docs/DEPLOY.md)。
 
 ---
 
@@ -174,6 +182,9 @@ audioforge ncm ~/Music/ncm/ -r --cover -o ~/Music/out
 # 解完直接转成 wav
 audioforge ncm song.ncm --to wav
 
+# 解出来顺便把歌名/歌手/专辑/封面写成 ID3v2.3 标签（mp3 专有，码流不动）
+audioforge ncm song.ncm --tags
+
 # 通用互转：flac -> mp3 320k
 audioforge convert album/*.flac -f mp3 --quality high -o out/
 
@@ -262,6 +273,32 @@ Web 页面就是这套接口的客户端，可以单独调用。
 请求都扫一遍 PATH、起一次 `ffmpeg -version` 子进程、`rglob` 整个结果目录，
 601 个 job 时单次要 679 ms；现在 ffmpeg 探测与服务启动时做一次、磁盘用量走增量计数。
 
+### `GET /api/stats`
+
+给运维看的一组**纯内存计数**：进程活了多久、接了几个 IP、job 表里各状态多少条、
+磁盘用了多少。不遍历目录、不起子进程 —— 否则就成了 `/api/health` 那个毛病换了个入口。
+
+```json
+{
+  "ok": true,
+  "version": "1.0.0",
+  "uptime_s": 3612.4,
+  "python": "3.12.7",
+  "platform": "Linux-6.6.32-x86_64-with",
+  "jobs": { "tracked": 12, "active": 1, "done": 10, "error": 1 },
+  "ips": 3,
+  "disk": { "jobs_mb": 41.2, "limit_mb": 20480 },
+  "limits": { "max_upload_mb": 200, "max_output_mb": 2048, "concurrency": 4, "conn_timeout_s": 60 },
+  "ffmpeg": { "found": true, "version": "ffmpeg version 7.1 ..." },
+  "auth": { "mode": "bearer" }
+}
+```
+
+它和 `/api/health` 的区别是「视角」：`health` 回答**这个实例能干什么**（能力、限额、
+本人用量，客户端要先读它再决定能不能传），`stats` 回答**这个实例现在怎么样**
+（负载、积压、异常数，给监控和 `docker stats` 旁边那一眼用）。
+和其余 `/api/*` 一样需要凭证。
+
 ### `POST /api/convert`
 
 `multipart/form-data`，字段：
@@ -273,6 +310,12 @@ Web 页面就是这套接口的客户端，可以单独调用。
 | `quality` | 否 | `low` / `medium` / `high`，默认 `high` |
 | `bitrate` | 否 | 覆盖码率，如 `320k`（语法校验：`^\d{2,4}[kK]?$`） |
 | `job` | 否 | 客户端自带的 job 标识（8–64 位十六进制），用于转换**开始前**就能轮询进度 |
+| `tags` | 否 | 写 ID3 标签：`1` / `on` / `true` / `yes` 为真，缺省不写（见下） |
+
+`tags` 只影响 **NCM 解密出 mp3** 这一条路径：把歌名/歌手/专辑（有封面就一起）拼成
+一个 ID3v2.3 头**前置**到码流前面，码流本身逐字节不变 —— 所以「默认不写」是刻意的，
+`--tags` 是一个显式选择，而不是默认行为。flac 不写（该用 Vorbis comment），
+文件自带 ID3 头时也不重复写。
 
 ```bash
 curl -F "files=@song.ncm" -F "target=wav" -F "quality=medium" \
@@ -380,6 +423,7 @@ audio-forge/
 │   ├── py.typed             PEP 561 标记：本包自带类型注解
 │   ├── aes.py               纯 Python AES-128-ECB 加解密 + PKCS#7
 │   ├── ncm.py               NCM 容器解析、keystream 生成、流式解密（.part 原子写）
+│   ├── id3.py               ID3v2.3 标签构造（`--tags`，只前置、不动码流）
 │   ├── transcode.py         ffmpeg 探测与转码参数翻译（含 -fs 体积封顶）
 │   ├── multipart.py         零依赖 multipart/form-data 解析（mmap 切片）
 │   ├── guard.py             鉴权（Basic / Bearer）+ 限速 + 日配额 + 磁盘闸门
@@ -389,7 +433,7 @@ audio-forge/
 │   │   ├── base.py          BaseHandler：路由、响应助手、闸门、日志脱敏
 │   │   ├── convert.py       POST /api/convert
 │   │   ├── download.py      GET/HEAD /api/file/…（流式 + Range）
-│   │   ├── health.py        /api/ping、/api/ready、/api/health、/api/job
+│   │   ├── health.py        /api/ping、/api/ready、/api/health、/api/stats、/api/job
 │   │   └── app.py           AppServer 装配、启动横幅、过期清理线程
 │   ├── server.py            兼容门面：旧导入路径仍然可用
 │   ├── cli.py               子命令：ncm / convert / probe / formats / serve
@@ -417,7 +461,7 @@ audio-forge/
 │   ├── audio-forge.service  systemd 单元（加固项全生效需 ≥ 242；verify 零输出需 ≥ 247）
 │   ├── audio-forge.service.rhel7  老 systemd 降级版（< 242，如 CentOS 7 的 219）
 │   └── env.example          口令与令牌模板（`/etc/audio-forge/env` 或 compose 的 `.env`）
-├── .github/workflows/ci.yml Python 3.9–3.13 矩阵测试 + lint 作业（action 固定 SHA）
+├── .github/workflows/ci.yml Python 3.9–3.14 矩阵测试 + lint 作业（action 固定 SHA）
 ├── .github/dependabot.yml   pip / actions / docker 三条升级通道
 ├── .pre-commit-config.yaml  ruff + ruff-format + 本地 unittest
 ├── Dockerfile
@@ -450,7 +494,7 @@ audio-forge/
 | multipart | `multipart.py`，`mmap` + `find` 切片 | Python 3.13 已移除 `cgi`，不能依赖它 |
 | 前端 | 原生 HTML/CSS/JS | 不引 CDN、不需要 node 构建 |
 
-最低 Python 版本 **3.9**（CI 覆盖 3.9 / 3.10 / 3.11 / 3.12 / 3.13）。
+最低 Python 版本 **3.9**（CI 覆盖 3.9 / 3.10 / 3.11 / 3.12 / 3.13 / 3.14）。
 
 ### 外部程序
 
@@ -534,25 +578,31 @@ NCM 的音频段用 256 字节周期的 keystream 异或。逐字节 Python 循�
 python -m unittest discover -s tests -t . -v
 ```
 
-**215 个用例**，全部用标准库 `unittest`，不需要安装 pytest：
+**250 个用例**，全部用标准库 `unittest`，不需要安装 pytest：
 
 - **AES**：FIPS-197 两组官方向量、加解密往返、S-box 单射性、PKCS#7 边界与宽松模式
 - **NCM**：测试用的 `.ncm` 不是样本文件，而是按 `docs/FORMAT.md` 现场造出来的 ——
   用 `AES128ECB.encrypt` 生成 key/meta 块，用同一张 keystream 表异或回去。
   覆盖 4 MiB 分块边界、非 256 对齐的尾块、新旧两种 key 布局、封面长度重复/单写、
   截断文件、非 NCM 输入；外加 `.part` 原子写（失败不留半成品）与体积对照告警
-- **multipart**：中文字段、128 KiB 二进制保真、`../../evil.mp3` 清洗、重复文件名、超大字段
+- **ID3**：不带第三方库、自带二十行的最小解析器回读自己写的标签 —— 版本号与
+  synchsafe 长度、**帧长度是普通大端而非 synchsafe**（用 200 字节载荷钉住）、
+  中文 UTF-16LE、多艺人的 `/` 连接、`APIC` 逐字节布局、超大封面跳过、
+  已被标记/非 mp3 时不写
+- **multipart**：中文字段、128 KiB 二进制保真、`../../evil.mp3` 清洗、重复文件名、超大字段；
+  **缺收尾 `--boundary--` 一律按截断拒绝**（半份内容不落盘）、Windows 保留名
+  （`CON`/`nul`/`COM1`）与尾点尾空格清洗
 - **鉴权与配额**：Basic / Bearer / 二者组合、畸形 base64、无冒号、口令含冒号；
   限速窗口滚动与跨日重置（假时钟）；日文件数、日字节数、磁盘清理按 mtime 从旧到新；
   **批量上传不能绕过日配额**、XFF 信任模型的五种组合、记账桶的过期回收与硬上限
 - **HTTP**：随机端口起真实服务，跑通上传→转换→下载全链路；
   另测 401（含 `WWW-Authenticate`）、429（含 `Retry-After`）、400/404/413/**416**、路径穿越，
   「静态资源公开、`/api/*` 需要凭证」这条边界，以及 `Range`/`206`/`HEAD`、`ETag`/`304`、
-  `/api/job` 轮询、`/api/ready` 的 503、**日志里不出现明文令牌**
+  `/api/job` 轮询、`/api/ready` 的 503、`/api/stats` 的字段与鉴权、**日志里不出现明文令牌**
 - **CLI 与部署**：子命令退出码、目录展开、`probe --json`、`ncm` 落盘；
   systemd 单元里每个 flag 都必须被 argparse 接受（防「本地全绿、上线 unrecognized arguments」）
 
-CI 在 Python 3.9–3.13 五个版本上跑同一套测试，另有一个 `lint` 作业跑 `ruff` 与 `mypy`。
+CI 在 Python 3.9–3.14 六个版本上跑同一套测试，另有一个 `lint` 作业跑 `ruff` 与 `mypy`。
 ffmpeg 相关用例在检测不到 ffmpeg 时自动跳过。runner 若没预装 ffmpeg，CI 会装
 `imageio-ffmpeg` 的静态二进制（不走 apt，避免多 job 抢锁）。
 
@@ -563,7 +613,7 @@ pip install -e ".[dev]"     # ruff + mypy + coverage，都写在 pyproject.toml 
 ruff check .                # E,F,W,I,UP,B,SIM；line-length 100
 mypy                        # check_untyped_defs，src 全量
 coverage run --source=src/audioforge -m unittest discover -s tests -t .
-coverage report -m          # 门限 80%（当前 83%）
+coverage report -m          # 门限 80%（当前 84%）
 pre-commit install          # 可选：提交前自动跑 ruff + unittest
 ```
 
@@ -650,8 +700,11 @@ audioforge serve --host 0.0.0.0 --token "$(python -c 'import secrets;print(secre
 Windows 上如果 ffmpeg 装在非 PATH 目录，用环境变量 `AUDIOFORGE_FFMPEG` 指过去最省事。
 
 **Q：解出来的文件能播放但元数据（歌名/歌手）没了？**
-NCM 把元数据放在单独的加密块里，本工具只还原音频码流，不往 mp3 的 ID3 头里回写标签。
-需要标签请用 `mutagen` 之类的工具后处理，或用 `probe` 先看清原文件里的信息。
+NCM 把元数据放在单独的加密块里，默认只还原音频码流、不动字节。要写回去就加 `--tags`
+（或网页上勾「写 ID3 标签」、API 里传 `tags=1`）：它会构造一个 ID3v2.3 头**前置**到
+mp3 前面，歌名/歌手/专辑/封面都在里面，码流本身逐字节不变。
+限制：只对 mp3 生效（flac 该用 Vorbis comment）；文件本身已带 ID3 头时不重复写；
+封面超过 8 MiB 就跳过（只影响标签，不影响音频）。
 
 **Q：转码后体积变大了？**
 转成 `wav`/`aiff` 是未压缩的，体积必然膨胀（320k mp3 约 2–4 倍）。

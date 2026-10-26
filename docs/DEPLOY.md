@@ -144,32 +144,48 @@ docker compose logs -f
 
 不是「照文档写一遍」，是真的构建、起容器、跑真文件验过的：
 
-| 项 | 实测值（alpine 版） | 旧 debian 版 |
-| --- | --- | --- |
-| 镜像大小 | **279 MB** | 832 MB |
-| 构建（含 apk 装 ffmpeg） | 2 分 55 秒，其中 ffmpeg 层 157 秒 | 3 分 49 秒 |
-| 构建（改代码重建，走缓存） | 12 秒 | 6.2 秒 |
-| 容器常驻内存 | 17 MB | 17 MB |
-| 镜像内 ffmpeg | 8.1.3（含 libmp3lame / flac / aac） | 5.1.x |
-| 真文件解密 | 200 349 B `.ncm` → 200 000 B mp3，与真机直解**逐字节一致**（`cmp` 无差异） | 10 MB `.ncm` → 9 841 292 B，同样一致 |
-| 通用转码 | mp3（33 062 B）→ flac（110 811 B），`ffprobe` 验为 44.1 kHz 单声道 | mp3 → flac，1.38 秒，48 kHz 双声道 |
-| 加固后能否工作 | `--read-only --tmpfs /tmp --cap-drop ALL --no-new-privileges` 下 ping/ready/health、上传、解密、下载、转码全通；`touch /` 回 `Read-only file system` | 同 |
-| Range | `bytes=0-99` → 206 + `Content-Length: 100`；`HEAD` → 200 + 全长；越界 → 416 + `Content-Range: bytes */110811` | 同 |
+| 项 | 实测值（静态 ffmpeg 版） | 上一版（apk ffmpeg） | 旧 debian 版 |
+| --- | --- | --- | --- |
+| 镜像大小 | **202 MB** | 279 MB | 832 MB |
+| 构建（冷构建，含取 ffmpeg） | 2 分 09 秒（其中下载 41.9 MB 静态包 ≈ 29 秒） | 2 分 55 秒（ffmpeg 层 157 秒） | 3 分 49 秒 |
+| 构建（改代码重建，走缓存） | 12 秒 | 12 秒 | 6.2 秒 |
+| 容器常驻内存 | 17 MB | 17 MB | 17 MB |
+| 镜像内 ffmpeg | 7.0.2-static（含 libmp3lame / flac / aac / libopus，**无 ffprobe**） | 8.1.3 | 5.1.x |
+| 真文件解密 | 合成 200 349 B `.ncm` → 200 000 B mp3，与真机直解**逐字节一致**（`cmp` 无差异）；`--tags` 后 200 165 B，标签之后仍是同一段码流 | 同 | 10 MB `.ncm` → 9 841 292 B，同样一致 |
+| 通用转码 | mp3（33 062 B）→ flac（110 811 B），`ffprobe` 验为 44.1 kHz 单声道；容器内 `libmp3lame -q:a 5` 造的 2 秒正弦 → flac 93 KB | 同 | mp3 → flac，1.38 秒，48 kHz 双声道 |
+| 加固后能否工作 | `--read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges` 下 ping/ready/health/stats、上传、解密（含 ID3）、下载、Range、转码全通；`touch /` 回 `Read-only file system`；`docker cp` 会被拒（rootfs 只读），得用 `docker exec -i sh -c 'cat > /tmp/x' < file` | 同 | 同 |
+| Range | `bytes=0-99` → 206 + `Content-Length: 100`；`HEAD` → 200 + 全长；越界 → 416 + `Content-Range: bytes */110811` | 同 | 同 |
 
-**为什么停在 279 MB 而不是更小**：alpine 的 `ffmpeg-libs` 是单体包，135 MB 里
-`libx265` 21 MB、`libavcodec` 20 MB、`libaom`/`libSvtAv1Enc`/`libjxl` 等各占几 MB，
-都是 `ffmpeg` 的硬依赖，删掉任何一个 `ffmpeg` 都直接起不来（`DT_NEEDED` 缺符号）。
-再往下只有两条路，都不划算：换静态精简 ffmpeg（省 ~40 MB，但要么依赖第三方二进制源、
-要么自己编，版本不可复现）；或在生产镜像里不装 pip（省 ~14 MB，但容器里就再也不能
-`pip install`）。另外 `docker images` 报的 279 MB 里约有 80 MB 是基础层被 apk 覆盖掉的旧
-`musl`/`openssl` —— 那是层语义决定的，构建时删不掉。
+**202 MB 是怎么来的，以及为什么不再往下压**：
 
-### 2.2 构建卡在 apk 下载时怎么处理
+1. `python:3.12-alpine` 基础镜像 **74.7 MB**（官方 CPython，换 `alpine:3.22` + `apk add python3`
+   能省 ~30 MB，但要自己跟 Python 版本、冷构建多 15 分钟，不划算）；
+2. 静态 `ffmpeg` 单文件 **79.8 MB**（`COPY --from` 从构建阶段搬进来，不带 ffprobe）；
+3. `pip install .` **12.1 MB**；
+4. 源码与元数据 < 1 MB。
 
-一次 ffmpeg 要拉 ~50 个包 / 135 MB，任何一个包失败整层就废掉。`Dockerfile` 里已经做了
-5 次外层循环重试 + 装完真的跑一次 `ffmpeg -version` 做断言。
+之前停在 279 MB，是因为 alpine 的 `ffmpeg-libs` 是个 **189 MB 的单体**：`libx265` 21 MB、
+`libavcodec` 20 MB、`libaom`/`libSvtAv1Enc`/`libjxl` 各占几 MB，全是 `ffmpeg` 的
+`DT_NEEDED` 硬依赖 —— `apk del` 无从下手，删任何一个 `ffmpeg` 都直接起不来。
+静态版把这一整棵树换成一个自包含的可执行文件（连 libc 都不需要，musl 下照样跑），
+省掉 109 MB。**代价是 ffmpeg 从 8.1 退到 7.0.2、且没有 ffprobe** —— 本项目只用
+`-c:a` / `-q:a` / `-fs` 这些十几年没变过的参数，换来的 109 MB 更值。
 
-如果仍反复失败（典型表现：卡在 `apk add ffmpeg` 十几分钟不动）：
+再往下只剩两个小口子，都没做：删 `site-packages/pip`（-12 MB，但容器里就再也不能
+`pip install`）、删 stdlib 的 `idlelib`/`tkinter`/`turtledemo`（-7 MB，纯属自找麻烦）。
+收益远小于「以后有人 `docker exec` 进去发现缺东西」的成本。
+
+⚠️ 另注：`docker images` 的 Size 与容器内 `du -sm /` 差 30% 以上（同一镜像 202 MB vs 141 MB），
+对账只认 `docker image inspect -f '{{.Size}}'`，别拿 `du` 反驳。
+
+### 2.2 构建卡在下载时怎么处理
+
+冷构建要下载两样东西：`apk add curl xz`（几 MB）和 **41.9 MB 的静态 ffmpeg 包**。
+`Dockerfile` 里已经在 curl 上做了 5 次重试（`--retry 5 --retry-delay 2`），
+并且**校验 SHA256**：下载到的字节与钉在 `Dockerfile` 里的哈希不符就整层失败，
+不会悄悄换一个二进制进镜像。
+
+如果反复失败（典型表现：卡在 `curl ... ffmpeg-release-amd64-static.tar.xz` 几分钟不动）：
 
 ```bash
 # 换国内源（Dockerfile 已内置这两个参数，改源比反复重试有效）
@@ -185,6 +201,23 @@ docker build --build-arg APK_MIRROR=mirrors.aliyun.com \
 不到 1 秒下完同一个索引文件；`pypi.org` 在容器里直接 `Connection refused`，
 `pypi.tuna.tsinghua.edu.cn` 正常。也就是说国内网络下这两个 build-arg 基本是必需的 ——
 不加会卡在下载，不是失败，是慢到看起来像卡死。
+
+**换 ffmpeg 源/升版本**（只有一个地方要改，两行必须同步）：
+
+```bash
+# 1) 本地先下下来，算哈希
+curl -fsSL -o ff.tar.xz <新的 tar.xz 地址> && sha256sum ff.tar.xz
+# 2) 把地址与哈希填进 docker build（不填哈希就用不了，这是故意的）
+docker build --build-arg FFMPEG_URL=<新的 tar.xz 地址> \
+             --build-arg FFMPEG_SHA256=<上一步的 sha256> -t audio-forge .
+```
+
+默认只认 **全静态**构建（`ffmpeg-*-{amd64,arm64}-static.tar.xz` 这一类）：动态链接的
+glibc 版在 alpine 里加载不了。`Dockerfile` 里已经按 `TARGETARCH` 内置了 **amd64 与
+arm64** 两个包 + 各自的 SHA256（arm64 包 19.3 MB / 解出 51 MB，amd64 是 41.9 MB / 79.8 MB），
+`--platform linux/arm64` 会自动选中；其它架构（armhf、ppc64le…）请在命令行显式
+`--build-arg FFMPEG_URL=... --build-arg FFMPEG_SHA256=...`，否则构建直接失败并给出提示。
+本项目不调用 `ffprobe`，所以包里那个同体积的 `ffprobe` 直接不搬进镜像。
 
 > 踩过的坑：`--build-arg HTTP_PROXY=http://127.0.0.1:xxxx` 里的 `127.0.0.1` 指的是**容器自己**，
 > 不是宿主机，会得到 `Connection refused`；要指向宿主得用 `http://http.docker.internal:3128`
@@ -266,7 +299,7 @@ audioforge serve --host 127.0.0.1 --port 8000
 | 提示「非 NCM 文件必须指定目标格式」 | 目标格式选了「自动」但有非 `.ncm` 文件，选具体格式 |
 | 下载 404 | 超过 `--ttl` 被清理，或 job 目录被 `--workdir` 改动后找不到 |
 | 转码报 `ffmpeg 转码失败` | 响应 `error` 字段里有 ffmpeg stderr 的最后三行，通常是输入编码不被支持 |
-| Docker 里 `transcode: false` | 镜像构建时 apk 装 ffmpeg 失败（构建日志里 `apk: ffmpeg 报成功但跑不起来` 或整层失败），`docker run --rm audio-forge ffmpeg -version` 验一下；国内网络记得传 `APK_MIRROR` |
+| Docker 里 `transcode: false` | 镜像构建时取 ffmpeg 失败。构建日志里搜三条之一：`sha256sum -c` 报 FAILED（上游换了包）、`ffmpeg: 静态包解出来了但跑不起来`（架构不对，比如在 arm 机器上构建 amd64 包）、`ffmpeg: 装上了但跑不起来`（COPY 阶段出的问题）。`docker run --rm --entrypoint ffmpeg audio-forge -version` 直接验。国内网络记得传 `APK_MIRROR` / `PIP_INDEX_URL` |
 | 内存持续上涨 | 正常路径下不会；检查是否有超大单文件 + 极低 `--max-mb` 组合导致反复重试 |
 | 中文文件名下载变乱码 | 服务端用 RFC 5987 `filename*=UTF-8''…`，老浏览器可能不认，换现代浏览器 |
 

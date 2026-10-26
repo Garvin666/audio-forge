@@ -161,8 +161,13 @@ class ServerCase(unittest.TestCase):
         self.assertFalse(data["ok"])
 
     def test_oversized_request_rejected(self):
+        # 服务端读完 Content-Length 就拒绝，不会再读 body。客户端此时可能拿到 413，
+        # 也可能在继续发送时被断开（Linux 上更常见），两种都算「拒绝」。
         body = multipart([("big.ncm", b"\x00" * (self.max_bytes + 1))], {"target": "auto"})
-        status, data = self.post("/api/convert", body)
+        try:
+            status, data = self.post("/api/convert", body)
+        except (urllib.error.URLError, ConnectionResetError, BrokenPipeError):
+            return
         self.assertEqual(status, 413)
         self.assertFalse(data["ok"])
 

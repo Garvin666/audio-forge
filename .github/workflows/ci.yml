@@ -22,12 +22,18 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Ensure ffmpeg
+      - name: Provide ffmpeg
+        timeout-minutes: 5
         run: |
-          if ! command -v ffmpeg >/dev/null 2>&1; then
-            sudo apt-get update && sudo apt-get install -y ffmpeg
+          if command -v ffmpeg >/dev/null 2>&1; then
+            echo "system: $(ffmpeg -version | head -1)"
+          else
+            # runner 没预装时不去 apt（慢且容易卡锁），直接用静态二进制 wheel
+            python -m pip install imageio-ffmpeg
+            FF=$(python -c "import imageio_ffmpeg;print(imageio_ffmpeg.get_ffmpeg_exe())")
+            echo "AUDIOFORGE_FFMPEG=$FF" >> "$GITHUB_ENV"
+            echo "bundled: $("$FF" -version | head -1)"
           fi
-          ffmpeg -version | head -1
 
       - name: Install package (no third-party deps)
         run: |

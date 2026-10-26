@@ -24,8 +24,20 @@ htmlcov/
 .pytest_cache/
 
 # ---- 音频文件：不要提交任何受版权保护的素材 ----
-# 测试用的 NCM/音频全部由 tests/ 里的 fixture 现场生成，仓库不需要样本文件。
+# 测试用的 NCM/QMC/音频全部由 tests/ 里的 fixture 现场生成，仓库不需要样本文件。
 *.ncm
+# QMC 加密容器（QQ 音乐）。和 NCM 同理，而且更危险：
+# 这类文件是用户自己买的歌，推上去既是版权问题，也可能带账号痕迹。
+*.mflac
+*.mflac0
+*.mgg
+*.mgg0
+*.mgg1
+*.mggl
+*.qmc*
+*.bkc*
+*.tkm
+*.mmp4
 *.mp3
 *.flac
 *.wav

@@ -7,7 +7,8 @@
 
     GET  /                     上传页
     GET  /app.js /style.css    前端静态资源
-    GET  /api/health           能力探测（有没有 ffmpeg、支持哪些格式）
+    GET  /api/ping             探活（恒 200，无凭证、不计限速）
+    GET  /api/health           能力探测（有没有 ffmpeg、支持哪些格式、当前用量）
     POST /api/convert          multipart 上传并转换
     GET  /api/file/<job>/<名>  下载转换结果
 
@@ -28,16 +29,25 @@ from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import quote, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from . import __version__
 from . import ncm, transcode
+from .guard import Denied, Guard, Limits
 from .multipart import MultipartError, get_boundary, parse_multipart
 
 __all__ = ["ServerConfig", "create_server", "serve"]
 
 WEB_DIR = Path(__file__).parent / "web"
 _SPOOL_BLOCK = 1 << 16
+# 拒绝请求时最多读掉这么多 body 再回错误；超过就不读、直接关连接
+_DRAIN_CAP = 32 << 20
+# 这些路径不含数据，且 Bearer 模式下页面必须先加载出来才能取到令牌
+_PUBLIC_PATHS = ("/", "/index.html", "/app.js", "/style.css", "/favicon.ico")
+# 探活口：不校验凭证、不计限速，只回 {"ok": true}。
+# 容器 healthcheck 与监控探针走这里，就不必把带用量明细的 /api/health 公开，
+# 也不会每 30 秒吃掉一次每 IP 额度。
+_PING_PATH = "/api/ping"
 
 
 @dataclass
@@ -50,6 +60,10 @@ class ServerConfig:
     concurrency: int = 4
     ffmpeg: str | None = None
     quiet: bool = False
+    auth_user: str | None = None
+    auth_pass: str | None = None
+    access_token: str | None = None
+    limits: Limits = field(default_factory=Limits)
     _root: Path = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -72,6 +86,7 @@ class _Limited(BaseHTTPRequestHandler):
     server_version = f"audio-forge/{__version__}"
     protocol_version = "HTTP/1.1"
     cfg: ServerConfig
+    guard: Guard
     slots: threading.Semaphore
 
     # ---------- 基础工具 ---------- #
@@ -96,8 +111,75 @@ class _Limited(BaseHTTPRequestHandler):
         self._send(status, json.dumps(obj, ensure_ascii=False).encode("utf-8"),
                    "application/json; charset=utf-8")
 
-    def _error(self, status: int, msg: str) -> None:
-        self._json({"ok": False, "error": msg}, status)
+    def _error(self, status: int, msg: str, headers: dict | None = None) -> None:
+        self._send(status, json.dumps({"ok": False, "error": msg}, ensure_ascii=False).encode("utf-8"),
+                   "application/json; charset=utf-8", headers)
+
+    def _gate(self, *, check_rate: bool = True) -> bool:
+        """鉴权 + 限速。被拒时已写好响应，返回 False。
+
+        配额不在这里 —— 它需要知道请求体多大，而且要先把 body 读掉再回错误，
+        单独放在 ``do_POST`` 里处理。
+        """
+        ip = self.client_address[0]
+        # 下载是 <a href> 直连，带不了自定义头，所以也接受 ?token=（只在没有头时兜底）
+        query_token = (parse_qs(urlparse(self.path).query).get("token") or [""])[0]
+        headers = {
+            "Authorization": self.headers.get("Authorization", "") or "",
+            "X-Auth-Token": self.headers.get("X-Auth-Token", "") or query_token,
+        }
+        try:
+            self.guard.verify(headers)
+            if check_rate:
+                self.guard.check_rate(ip)
+        except Denied as exc:
+            # 先读掉 body 再回错误：不读的话残余字节会被当成下一条请求行
+            self._reject_body(self._body_length())
+            self._error(exc.status, exc.message, exc.headers)
+            return False
+        return True
+
+    def _drain(self, total: int) -> None:
+        """把请求体读掉丢弃。
+
+        拒绝时如果不读 body，客户端可能还在 ``sendall`` 就被 RST，拿不到我们写好的
+        错误响应（Windows 上表现为 ConnectionResetError）。读之前先估大小，见
+        ``_reject_body``。
+        """
+        left = total
+        try:
+            while left > 0:
+                chunk = self.rfile.read(min(_SPOOL_BLOCK, left))
+                if not chunk:
+                    return
+                left -= len(chunk)
+        except OSError:
+            self.close_connection = True
+
+    def _body_length(self) -> int:
+        """请求头里声明的 body 大小，解析不了就当 0。"""
+        try:
+            return max(0, int(self.headers.get("Content-Length") or 0))
+        except ValueError:
+            return 0
+
+    def _reject_body(self, total: int) -> None:
+        """拒绝请求前处理还没读的请求体。
+
+        两条路，走错哪条都出事：
+
+        * **读干净再回错误** —— 客户端还在发送时直接关连接，服务端会发 RST，
+          客户端拿不到写好的 401/429。
+        * **太大就不读、置 close_connection** —— 残留的分段字节会被
+          ``BaseHTTPRequestHandler`` 当成下一条请求行，日志里冒出
+          ``400 Bad request syntax``；这也是请求走私的口子，必须关连接。
+        """
+        if total <= 0:
+            return
+        if total > _DRAIN_CAP:
+            self.close_connection = True
+            return
+        self._drain(total)
 
     def _static(self, name: str) -> None:
         path = (WEB_DIR / name).resolve()
@@ -125,6 +207,12 @@ class _Limited(BaseHTTPRequestHandler):
             "limits": {
                 "max_upload_mb": round(self.cfg.max_bytes / (1 << 20)),
                 "job_ttl_minutes": round(self.cfg.ttl / 60),
+                "quota": self.guard.limits.as_dict(),
+            },
+            "auth": {
+                "mode": self.guard.mode,
+                "usage": self.guard.usage(self.client_address[0]),
+                "disk_mb": round(self.guard.disk_usage_mb(), 1),
             },
         })
 
@@ -133,6 +221,12 @@ class _Limited(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         route = urlparse(self.path).path
         try:
+            # 放在 _gate 之前：探活不该需要凭证，也不该占用限速额度
+            if route == _PING_PATH:
+                self._json({"ok": True})
+                return
+            if route not in _PUBLIC_PATHS and not self._gate():
+                return
             if route in ("/", "/index.html"):
                 self._static("index.html")
             elif route in ("/app.js", "/style.css"):
@@ -157,7 +251,10 @@ class _Limited(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         route = urlparse(self.path).path
         if route != "/api/convert":
+            self._reject_body(self._body_length())
             self._error(HTTPStatus.NOT_FOUND, f"未知路径 {route}")
+            return
+        if not self._gate():
             return
 
         length = self.headers.get("Content-Length")
@@ -173,9 +270,20 @@ class _Limited(BaseHTTPRequestHandler):
             self._error(HTTPStatus.BAD_REQUEST, "请求体为空")
             return
         if total > self.cfg.max_bytes:
+            self._reject_body(total)
             self._error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
                         f"上传超过上限 {self.cfg.max_bytes / (1 << 20):.0f} MB")
             return
+
+        # 提交前先按声明大小核配额、腾磁盘，避免收完 200 MB 才发现不让传
+        ip = self.client_address[0]
+        try:
+            self.guard.check_quota(ip, n_bytes=total)
+        except Denied as exc:
+            self._reject_body(total)
+            self._error(exc.status, exc.message, exc.headers)
+            return
+        self.guard.ensure_disk()
 
         token = uuid.uuid4().hex
         job = self.cfg.jobs_dir / token
@@ -205,6 +313,8 @@ class _Limited(BaseHTTPRequestHandler):
                     self._convert_one(f, out_dir, target, quality, bitrate) for f in files
                 ]
 
+            done = sum(1 for r in results if r["ok"])
+            self.guard.record(ip, done, total)
             self._json({"ok": True, "job": token, "results": results})
         except MultipartError as exc:
             self._error(HTTPStatus.BAD_REQUEST, str(exc))
@@ -309,7 +419,18 @@ def _cleaner(cfg: ServerConfig, stop: threading.Event) -> None:
 
 
 def create_server(cfg: ServerConfig, *, start_cleaner: bool = True) -> ThreadingHTTPServer:
-    handler = type("Handler", (_Limited,), {"cfg": cfg, "slots": threading.Semaphore(cfg.concurrency)})
+    guard = Guard(
+        user=cfg.auth_user,
+        password=cfg.auth_pass,
+        token=cfg.access_token,
+        limits=cfg.limits,
+        jobs_dir=cfg.jobs_dir,
+    )
+    handler = type("Handler", (_Limited,), {
+        "cfg": cfg,
+        "guard": guard,
+        "slots": threading.Semaphore(cfg.concurrency),
+    })
     httpd = ThreadingHTTPServer((cfg.host, cfg.port), handler)
     httpd.daemon_threads = True
     if start_cleaner:
@@ -319,14 +440,35 @@ def create_server(cfg: ServerConfig, *, start_cleaner: bool = True) -> Threading
     return httpd
 
 
+def _describe_limits(limits: Limits) -> str:
+    bits = []
+    if limits.per_minute > 0:
+        bits.append(f"{limits.per_minute} 次/分")
+    if limits.files_per_day > 0:
+        bits.append(f"{limits.files_per_day} 文件/日")
+    if limits.mb_per_day > 0:
+        bits.append(f"{limits.mb_per_day / 1024:.0f} GB/日")
+    if limits.disk_mb > 0:
+        bits.append(f"磁盘 {limits.disk_mb / 1024:.0f} GB")
+    return " · ".join(bits) if bits else "不限制"
+
+
 def serve(cfg: ServerConfig) -> int:
     httpd = create_server(cfg)
+    guard: Guard = httpd.RequestHandlerClass.guard  # type: ignore[attr-defined]
     ff = cfg.ffmpeg or transcode.find_ffmpeg()
     shown = cfg.host if cfg.host not in ("0.0.0.0", "") else "127.0.0.1"
     print(f"audio-forge {__version__}  http://{shown}:{cfg.port}")
     print(f"  临时目录 : {cfg.root}")
     print(f"  上传上限 : {cfg.max_bytes / (1 << 20):.0f} MB")
     print(f"  通用转码 : {transcode.ffmpeg_version(ff) if ff else '不可用（未找到 ffmpeg，仅 NCM 通道可用）'}")
+    if guard.mode == "none":
+        print("  鉴权     : 未启用 —— 任何能访问该端口的人都能上传，只应在本机使用")
+    else:
+        who = f"用户 {cfg.auth_user}" if guard.has_basic else ""
+        tok = "Bearer 令牌" if cfg.access_token else ""
+        print(f"  鉴权     : {guard.mode}（{' + '.join(x for x in (who, tok) if x)}）")
+    print(f"  配额     : {_describe_limits(cfg.limits)}")
     print("  Ctrl+C 退出")
     try:
         httpd.serve_forever()

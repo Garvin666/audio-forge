@@ -13,6 +13,32 @@
 
   const state = { files: [], health: null, busy: false };
 
+  // 令牌：优先取 ?token=xxx（取完从地址栏抹掉），回退 sessionStorage。
+  // Basic 认证模式下这里为空，浏览器自己带 Authorization，不需要令牌。
+  const TOKEN = (() => {
+    const q = new URLSearchParams(location.search);
+    const fromUrl = q.get('token');
+    if (fromUrl) {
+      sessionStorage.setItem('af_token', fromUrl);
+      q.delete('token');
+      const rest = q.toString();
+      history.replaceState(null, '', location.pathname + (rest ? '?' + rest : ''));
+      return fromUrl;
+    }
+    return sessionStorage.getItem('af_token') || '';
+  })();
+
+  function withAuth(headers) {
+    const h = headers || {};
+    if (TOKEN) h['Authorization'] = 'Bearer ' + TOKEN;
+    return h;
+  }
+
+  function downloadUrl(url) {
+    if (!TOKEN) return url;
+    return url + (url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(TOKEN);
+  }
+
   const size = (n) => n >= 1048576
     ? (n / 1048576).toFixed(1) + ' MB'
     : Math.max(1, Math.round(n / 1024)) + ' KB';
@@ -23,7 +49,16 @@
 
   async function boot() {
     try {
-      const r = await fetch('/api/health', { cache: 'no-store' });
+      const r = await fetch('/api/health', { cache: 'no-store', headers: withAuth() });
+      if (r.status === 401) {
+        el.status.textContent = '需要凭证';
+        el.status.className = 'badge badge-warn';
+        el.ffnote.textContent = TOKEN
+          ? '令牌无效或已更换：请用带 ?token=新令牌 的地址重新打开本页'
+          : '该服务已启用令牌认证：请在地址后加 ?token=你的令牌 再打开';
+        el.go.disabled = true;
+        return;
+      }
       const h = await r.json();
       state.health = h;
       applyHealth(h);
@@ -146,6 +181,7 @@
 
     const xhr = new XMLHttpRequest();
     xhr.open('POST', '/api/convert');
+    if (TOKEN) xhr.setRequestHeader('Authorization', 'Bearer ' + TOKEN);
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable) setBar((e.loaded / e.total) * 0.8);
     };
@@ -157,8 +193,13 @@
     xhr.onload = () => {
       let data = null;
       try { data = JSON.parse(xhr.responseText); } catch (_) { /* 保留 null */ }
+      const detail = data && data.error ? data.error : `HTTP ${xhr.status}`;
+      if (xhr.status === 401) {
+        finish('令牌无效或已过期：请用带 ?token= 的地址重新打开本页。', true);
+        return;
+      }
+      if (xhr.status === 429) { finish('请求被拒绝：' + detail, true); return; }
       if (xhr.status !== 200 || !data) {
-        const detail = data && data.error ? data.error : `HTTP ${xhr.status}`;
         finish('转换失败：' + detail, true);
         return;
       }
@@ -213,7 +254,7 @@
       if (r.ok && r.url) {
         const a = document.createElement('a');
         a.className = 'dl';
-        a.href = r.url;
+        a.href = downloadUrl(r.url);
         a.setAttribute('download', r.name || '');
         a.textContent = '下载';
         li.appendChild(a);

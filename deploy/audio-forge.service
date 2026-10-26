@@ -1,0 +1,51 @@
+[Unit]
+Description=audio-forge 音频转换服务
+Documentation=https://github.com/Garvin666/audio-forge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=audioforge
+Group=audioforge
+WorkingDirectory=/opt/audio-forge
+
+# 口令与令牌放这里，别写进命令行（ps 能看到）
+EnvironmentFile=/etc/audio-forge/env
+
+# 只监听回环，公网流量由 Nginx 转发进来
+ExecStart=/opt/audio-forge/venv/bin/audioforge serve \
+    --host 127.0.0.1 \
+    --port 8000 \
+    --workdir /var/lib/audio-forge \
+    --max-mb 200 \
+    --ttl 3600 \
+    --rate 120 \
+    --daily-files 2000 \
+    --daily-gb 20 \
+    --disk-gb 20 \
+    --quiet
+
+Restart=on-failure
+RestartSec=3
+
+# --- 加固 ---
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryMax=2G
+TasksMax=128
+
+# 只有结果目录可写（PrivateTmp 会重定向 /tmp，但 --workdir 显式指到了 /var/lib）
+ReadWritePaths=/var/lib/audio-forge
+
+[Install]
+WantedBy=multi-user.target

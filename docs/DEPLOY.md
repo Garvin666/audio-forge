@@ -37,9 +37,16 @@ audioforge serve
 
 | 参数 | 默认 | 说明 |
 | --- | --- | --- |
-| `--host` | `127.0.0.1` | 改成 `0.0.0.0` 才对局域网开放（想清楚再改） |
+| `--host` | `127.0.0.1` | 改成 `0.0.0.0` 才对局域网开放（**必须同时开鉴权**，否则 CLI 会警告） |
 | `--port` | `8000` | |
+| `--auth` | 关 | `用户:口令`，启用 HTTP Basic（也可用 `AUDIOFORGE_AUTH`） |
+| `--token` | 关 | 启用 Bearer 令牌（也可用 `AUDIOFORGE_TOKEN`），页面用 `?token=` 传入 |
 | `--max-mb` | `200` | 单次请求上限 |
+| `--rate` | `120` | 每 IP 每分钟请求数，0 不限 |
+| `--daily-files` | `2000` | 每 IP 每日文件数，0 不限 |
+| `--daily-gb` | `20` | 每 IP 每日上传量，0 不限 |
+| `--disk-gb` | `20` | 结果目录上限，超出按 mtime 清旧，0 不限 |
+| `--no-limits` | 关 | 一键关闭速率与配额（`--max-mb` 除外） |
 | `--ttl` | `3600` | 结果保留秒数，过期整目录清理 |
 | `--workdir` | 系统临时目录 | 结果落盘位置 |
 | `--ffmpeg` | 自动探测 | 显式指定 ffmpeg |
@@ -108,6 +115,9 @@ docker compose logs -f
 要点：
 
 - **镜像里已经装了 ffmpeg**，`/api/health` 应该返回 `transcode: true`。
+- `docker-compose.yml` 的 healthcheck 打的是 `/api/ping`（无凭证、不计限速），
+  所以开了 `AUDIOFORGE_AUTH` 也不会被判 unhealthy。鉴权变量从 `.env` 注入，
+  见 `deploy/env.example`。
 - 容器内必须 `--host 0.0.0.0`（Dockerfile 的 CMD 已经写好），否则宿主机端口映射打不进来。
 - 端口映射建议写 `127.0.0.1:8000:8000`，只在宿主机回环上暴露；要对外由反代负责。
 - 结果目录挂到 `/data`，容器重建不丢正在下载的文件。
@@ -115,82 +125,71 @@ docker compose logs -f
 
 ---
 
-## 3. 公网（Nginx 反代）
+## 3. 公网
 
-**先明确风险**：服务本身没有鉴权、没有速率限制、没有配额。放到公网等于把一个
-「任意人可上传任意大文件、并消耗 CPU 转码」的入口交出去。至少补上下面三项，否则
-不要上线。
-
-### 3.1 加鉴权（Nginx Basic Auth 最小方案）
+**顺序很重要**：先打开应用层鉴权，再上反代。反代只能挡「没登录的人」，挡不住
+「登录了的人连传 500 个 200 MB 把磁盘写满」—— 后者只有应用自己知道一次请求几个文件。
 
 ```bash
-sudo apt install apache2-utils
-sudo htpasswd -c /etc/nginx/.htpasswd youruser
+# 第一步：开鉴权（口令走环境变量，别进命令行）
+export AUDIOFORGE_AUTH='alice:强口令'
+audioforge serve --host 127.0.0.1 --port 8000 --workdir /var/lib/audio-forge
+
+# 或者用令牌（适合脚本调用）
+export AUDIOFORGE_TOKEN="$(python -c 'import secrets;print(secrets.token_urlsafe(32))')"
+audioforge serve --host 127.0.0.1 --port 8000
 ```
 
-### 3.2 站点配置
+配额默认就开着，一般不用动：
 
-```nginx
-server {
-    listen 443 ssl http2;
-    server_name audio.example.com;
+| 参数 | 默认 | 说明 |
+| --- | --- | --- |
+| `--max-mb` | 200 | 单次请求体积 |
+| `--rate` | 120 | 每 IP 每分钟请求数 |
+| `--daily-files` | 2000 | 每 IP 每日文件数 |
+| `--daily-gb` | 20 | 每 IP 每日上传量 |
+| `--disk-gb` | 20 | 结果目录上限，超了按 mtime 清旧 |
 
-    ssl_certificate     /etc/letsencrypt/live/audio.example.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/audio.example.com/privkey.pem;
+第二步是 TLS 反代。完整可用的配置、systemd 单元、环境变量模板和部署后自检清单在
+**[../deploy/README.md](../deploy/README.md)**，这里不重复贴：
 
-    # 必须和 --max-mb 对齐，略大一点留 header 余量
-    client_max_body_size 210m;
-    client_body_timeout 300s;
+| 文件 | 用途 |
+| --- | --- |
+| `deploy/nginx.conf` | TLS + `limit_req`（30 r/s）+ `client_max_body_size` + 900s 超时 + 安全头 |
+| `deploy/audio-forge.service` | systemd 单元，含 `ProtectSystem=strict`、`PrivateTmp` 等加固 |
+| `deploy/env.example` | 口令/令牌模板，放 `/etc/audio-forge/env` 并 `chmod 600` |
+| `deploy/README.md` | 三种鉴权模式、配额取舍、自检 curl 清单、常见问题 |
 
-    # 上传/下载走大文件，关掉缓冲免得中转占盘
-    proxy_request_buffering off;
-    proxy_buffering off;
+三处必须对齐，否则会出现「上传到 100% 后报错」：
 
-    location / {
-        auth_basic           "audio-forge";
-        auth_basic_user_file /etc/nginx/.htpasswd;
+| 位置 | 项 | 取值 |
+| --- | --- | --- |
+| Nginx | `client_max_body_size` | ≥ 应用 `--max-mb`，留 10 MB 余量 |
+| Nginx | `proxy_read_timeout` | ≥ 900s（大文件转码慢） |
+| 应用 | `--max-mb` | ≤ 上面那个值 |
 
-        proxy_pass         http://127.0.0.1:8000;
-        proxy_http_version 1.1;
-        proxy_set_header   Host $host;
-        proxy_set_header   X-Real-IP $remote_addr;
-        # 大文件转码慢，读超时给足
-        proxy_read_timeout 900s;
-        proxy_send_timeout 900s;
-    }
-}
-```
-
-后端仍然只监听 `127.0.0.1:8000`，公网流量只经过 Nginx。
-
-### 3.3 上线清单
+鉴权之后仍要盯的几件事：
 
 | 项 | 建议 |
 | --- | --- |
-| 鉴权 | Basic Auth / OAuth2 Proxy / 公司 SSO，三选一，别裸奔 |
-| 上传上限 | `--max-mb` 与 `client_max_body_size` 同时设，后者略大 |
-| 结果保留 | `--ttl` 调小（如 900 秒），减少磁盘占用和残留风险 |
-| 并发 | `ServerConfig.concurrency` 默认 4；转码吃 CPU，按核数调，别超 `核数/2` |
-| 磁盘 | `/data` 单独挂盘 + 定时清理；监控剩余空间 |
-| 日志 | 用 `-q` 关掉访问日志，交给 Nginx 记；异常栈仍会打到标准错误 |
-| 出网 | 容器/进程不需要任何出网权限，可在防火墙上禁掉 |
-| 内容合规 | 不要把它做成公开的「音乐下载站」，见 README 的合规段落 |
-
-### 3.4 反向代理后拿不到真实 IP
-
-`server.py` 只记 `self.address_string()`，也就是直连地址（反代后恒为 127.0.0.1）。
-要真实 IP 就得读 `X-Real-IP`，但这需要信任边界判断，本工具故意没做 —— 需要的话在
-自己的分支里改 `log_message`，别无条件信任该头。
-
----
+| 磁盘 | `/var/lib/audio-forge` 单独挂盘 + 监控；`--disk-gb` 是最后一道闸，不是唯一一道 |
+| 日志 | 用 `--quiet` 关应用访问日志（反代已有）；异常栈仍会进 journald |
+| 出网 | 进程不需要任何出网权限，防火墙可以直接禁掉 |
+| 内容合规 | 不要做成公开的「音乐下载站」，见 README 的合规段落 |
+| 真实 IP | 应用记的是直连地址（反代后恒为 127.0.0.1）。要做按 `X-Forwarded-For` 分桶，必须配可信代理白名单，否则等于让人随便伪造 IP —— 本项目故意没做 |
 
 ## 4. 故障排查
 
 | 现象 | 排查 |
 | --- | --- |
-| 打开页面空白 | 看进程是否在跑；`curl -i http://127.0.0.1:8000/api/health` 有没有 JSON |
+| 打开页面空白 | 看进程是否在跑；`curl -i http://127.0.0.1:8000/api/ping` 有没有 `{"ok": true}` |
 | 页面能开但按钮一直灰 | `/api/health` 失败 → 前端拿不到能力列表；看浏览器 console |
 | 上传到 100% 后报 413 | 请求超过 `--max-mb`，同时检查反代的 `client_max_body_size` |
+| `/api/health` 返回 401 | 已启用鉴权。带 `-H "Authorization: Bearer <令牌>"`，或 `-u 用户:口令` |
+| 容器一直 unhealthy | healthcheck 应打 `/api/ping`（不必带凭证）；若改成打 `/api/health`，配了鉴权就会 401 |
+| 返回 429 且 `error` 提「请求过于频繁」 | 撞了 `--rate`；响应头有 `Retry-After` |
+| 返回 429 且 `error` 提「今日配额已用尽」 | 撞了 `--daily-files` / `--daily-gb`，按需调大 |
+| 磁盘满但 `--disk-gb` 设了 | 磁盘闸门只在**新请求进来时**触发；也可能超限前就已经写满，需外部监控兜底 |
 | 提示「非 NCM 文件必须指定目标格式」 | 目标格式选了「自动」但有非 `.ncm` 文件，选具体格式 |
 | 下载 404 | 超过 `--ttl` 被清理，或 job 目录被 `--workdir` 改动后找不到 |
 | 转码报 `ffmpeg 转码失败` | 响应 `error` 字段里有 ffmpeg stderr 的最后三行，通常是输入编码不被支持 |

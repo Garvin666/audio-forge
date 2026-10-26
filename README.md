@@ -11,7 +11,7 @@ Python 依赖**（`pip` 不会下载任何东西）。唯一的可选外部依�
 <img alt="python" src="https://img.shields.io/badge/python-3.9%2B-3776ab">
 <img alt="deps" src="https://img.shields.io/badge/dependencies-0-brightgreen">
 <img alt="license" src="https://img.shields.io/badge/license-MIT-blue">
-<img alt="tests" src="https://img.shields.io/badge/tests-72%20passed-brightgreen">
+<img alt="tests" src="https://img.shields.io/badge/tests-110%20passed-brightgreen">
 </p>
 
 ![上传页](docs/screenshot.png)
@@ -76,6 +76,58 @@ docker run --rm -p 127.0.0.1:8000:8000 -v "$PWD/data:/data" audio-forge
 
 ---
 
+## 鉴权与配额
+
+对外提供服务时必须打开鉴权。**鉴权在应用里做，不依赖反代** —— 因为只有应用知道
+「一次请求几个文件、多少字节」，配额才有意义。
+
+### 三种模式
+
+| 模式 | 启动参数 | 适合 | 浏览器体验 |
+| --- | --- | --- | --- |
+| 关（默认） | 无 | 只在本机 | 直接可用 |
+| Basic | `--auth 用户:口令` | 人用 | 原生弹框，输一次之后自动带凭据 |
+| Bearer | `--token 令牌` | 脚本 / CI | 页面地址加 `?token=xxx` 打开一次，令牌存进 sessionStorage |
+
+两者都配时「任一通过即可」。口令和令牌也可以走环境变量 `AUDIOFORGE_AUTH` /
+`AUDIOFORGE_TOKEN`，避免出现在 `ps` 里。
+
+```bash
+audioforge serve --auth 'alice:强口令'
+audioforge serve --token "$(python -c 'import secrets;print(secrets.token_urlsafe(32))')"
+```
+
+边界：`/api/*` 全部需要凭证（含 `/api/health`、`/api/file/...`）；两个例外 ——
+静态资源 `/`、`/app.js`、`/style.css` 公开（不含数据，且 Bearer 模式要靠页面先加载
+才能取令牌），`/api/ping` 公开（只回 `{"ok": true}`，给容器探针和监控用）。
+下载走 `<a href>` 带不了自定义头，所以额外接受 `?token=`。
+
+### 配额默认值
+
+| 参数 | 默认 | 作用 |
+| --- | --- | --- |
+| `--max-mb` | 200 | 单次请求体积，超出 413 |
+| `--rate` | 120 | 每 IP 每分钟请求数，超出 429 + `Retry-After` |
+| `--daily-files` | 2000 | 每 IP 每天成功转换的文件数 |
+| `--daily-gb` | 20 | 每 IP 每天上传总量 |
+| `--disk-gb` | 20 | 结果目录上限，超出按 mtime 从旧到新清到 80% |
+| `--ttl` | 3600 | 结果保留秒数 |
+| `--no-limits` | — | 一键关掉以上全部（`--max-mb` 除外） |
+
+配额检查在读完 `Content-Length` 后立刻做，不会先收完 200 MB 再告诉你超了。
+所有拒绝路径（401 / 403 / 413 / 429）都先处理请求体再回错误：body 不超过 32 MB 就
+读干净丢弃，否则关闭连接 —— 不这样做，客户端还在发送时会被 RST 拿不到错误响应；
+而甩着不读，残留的分段字节会被当成下一条请求行（日志里冒出 `400 Bad request syntax`，
+也是请求走私的口子）。计数在进程内，重启清零，多实例不共享。
+
+`/api/health` 会回显当前模式与本人用量：
+
+```json
+"auth": { "mode": "basic+bearer", "usage": { "files_today": 3, "mb_today": 12.5 }, "disk_mb": 48.2 }
+```
+
+---
+
 ## 命令行
 
 ```bash
@@ -115,6 +167,11 @@ audioforge serve --port 9000 --max-mb 500 --ttl 7200
 
 Web 页面就是这套接口的客户端，可以单独调用。
 
+### `GET /api/ping`
+
+探活口，恒回 `{"ok": true}`。不校验凭证、不计限速 —— 容器 healthcheck 和监控
+探针走这里，既不用把带用量的 `/api/health` 公开，也不会每 30 秒吃掉一次额度。
+
 ### `GET /api/health`
 
 ```json
@@ -124,11 +181,20 @@ Web 页面就是这套接口的客户端，可以单独调用。
   "ffmpeg": "ffmpeg version 7.1-essentials_build ...",
   "capabilities": { "ncm": true, "transcode": true },
   "formats": ["aac", "aiff", "alac", "flac", "m4a", "mp3", "ogg", "opus", "wav"],
-  "limits": { "max_upload_mb": 200, "job_ttl_minutes": 60 }
+  "limits": {
+    "max_upload_mb": 200,
+    "job_ttl_minutes": 60,
+    "quota": { "per_minute": 120, "files_per_day": 2000, "mb_per_day": 20480, "disk_mb": 20480 }
+  },
+  "auth": {
+    "mode": "none",
+    "usage": { "files_today": 0, "mb_today": 0.0, "requests_this_minute": 1 },
+    "disk_mb": 0.0
+  }
 }
 ```
 
-`ffmpeg` 为 `null` 表示只支持 NCM 通道。
+`ffmpeg` 为 `null` 表示只支持 NCM 通道。启用鉴权后这个接口本身也要凭证。
 
 ### `POST /api/convert`
 
@@ -179,8 +245,10 @@ curl -F "files=@song.ncm" -F "target=wav" -F "quality=medium" \
 | 状态 | 场景 |
 | --- | --- |
 | 400 | 缺 `Content-Length`、boundary 不合法、没有文件、字段超长 |
+| 401 | 缺凭证或凭证不对（启用 `--auth` / `--token` 后，`/api/*` 全需要；响应带 `WWW-Authenticate`） |
 | 404 | 未知路由、job 不存在或已过期、路径越界 |
-| 413 | 请求体超过 `--max-mb` |
+| 413 | 请求体超过 `--max-mb`（不读 body，直接断开） |
+| 429 | 触发限流或日配额，带 `Retry-After`；`error` 字段写明是哪一项 |
 | 500 | 服务端异常（响应里带异常类型与消息） |
 
 ---
@@ -196,6 +264,7 @@ audio-forge/
 │   ├── ncm.py               NCM 容器解析、keystream 生成、流式解密
 │   ├── transcode.py         ffmpeg 探测与转码参数翻译
 │   ├── multipart.py         零依赖 multipart/form-data 解析（mmap 切片）
+│   ├── guard.py             鉴权（Basic / Bearer）+ 限速 + 日配额 + 磁盘闸门
 │   ├── server.py            标准库 HTTP 服务：上传、转换、下载、过期清理
 │   ├── cli.py               子命令：ncm / convert / probe / formats / serve
 │   └── web/                 前端（原生 HTML/CSS/JS，无构建、无 CDN）
@@ -206,11 +275,17 @@ audio-forge/
 │   ├── test_aes.py          FIPS-197 官方向量、补位边界
 │   ├── test_ncm.py          现造 NCM fixture、跨分块边界、两种 key 布局
 │   ├── test_multipart.py    字段/文件/中文名/路径穿越/超大字段
+│   ├── test_guard.py        Basic/Bearer/限速/配额/磁盘清理（注入假时钟）
 │   ├── test_transcode.py    wav→flac/mp3/opus/m4a（无 ffmpeg 时跳过）
-│   └── test_server.py       端到端 HTTP：上传、下载、404、413
+│   └── test_server.py       端到端 HTTP：上传、下载、鉴权、限流、404/413/429
 ├── docs/
 │   ├── FORMAT.md            NCM 容器格式逐字节说明 + 三十行参考实现
 │   └── DEPLOY.md            Docker / 反代 / 公网部署清单
+├── deploy/
+│   ├── README.md            对外部署：鉴权模式 / 配额 / systemd / Nginx / 自检清单
+│   ├── nginx.conf           TLS 反代 + 连接级限流 + 超时 + 安全头
+│   ├── audio-forge.service  systemd 单元（含加固项）
+│   └── env.example          口令与令牌模板（`/etc/audio-forge/env` 或 compose 的 `.env`）
 ├── .github/workflows/ci.yml Python 3.9–3.13 矩阵测试
 ├── Dockerfile
 ├── docker-compose.yml
@@ -314,7 +389,7 @@ NCM 的音频段用 256 字节周期的 keystream 异或。逐字节 Python 循�
 python -m unittest discover -s tests -t . -v
 ```
 
-72 个用例，全部用标准库 `unittest`，不需要安装 pytest：
+110 个用例，全部用标准库 `unittest`，不需要安装 pytest：
 
 - **AES**：FIPS-197 两组官方向量、加解密往返、S-box 单射性、PKCS#7 边界与宽松模式
 - **NCM**：测试用的 `.ncm` 不是样本文件，而是按 `docs/FORMAT.md` 现场造出来的 ——
@@ -322,7 +397,11 @@ python -m unittest discover -s tests -t . -v
   覆盖 4 MiB 分块边界、非 256 对齐的尾块、新旧两种 key 布局、封面长度重复/单写、
   截断文件、非 NCM 输入
 - **multipart**：中文字段、128 KiB 二进制保真、`../../evil.mp3` 清洗、重复文件名、超大字段
-- **HTTP**：随机端口起真实服务，跑通上传→转换→下载全链路，另测 400/404/413 与路径穿越
+- **鉴权与配额**：Basic / Bearer / 二者组合、畸形 base64、无冒号、口令含冒号；
+  限速窗口滚动与跨日重置（假时钟）；日文件数、日字节数、磁盘清理按 mtime 从旧到新
+- **HTTP**：随机端口起真实服务，跑通上传→转换→下载全链路；
+  另测 401（含 `WWW-Authenticate`）、429（含 `Retry-After`）、400/404/413、路径穿越，
+  以及「静态资源公开、`/api/*` 需要凭证」这条边界
 
 CI 在 Python 3.9–3.13 五个版本上跑同一套测试。ffmpeg 相关用例在检测不到 ffmpeg 时自动跳过。
 runner 若没预装 ffmpeg，CI 会装 `imageio-ffmpeg` 的静态二进制（不走 apt，避免多 job 抢锁）。
@@ -340,19 +419,46 @@ audioforge serve                     # 127.0.0.1:8000，只有本机能访问
 
 Docker：见 `Dockerfile` / `docker-compose.yml`，镜像里装了 ffmpeg，结果挂载到 `/data`。
 
-公网部署（Nginx 反代、HTTPS、上传大小、并发与清理策略、需要自己补的鉴权）见
-**[docs/DEPLOY.md](docs/DEPLOY.md)**。
+公网部署：**[deploy/README.md](deploy/README.md)** 给了 systemd 单元、Nginx 反代配置、
+环境变量模板和一份「部署后自检」清单；**[docs/DEPLOY.md](docs/DEPLOY.md)** 是本机 / Docker /
+反代的完整说明。
+
+对外之前必须做一件事 —— **打开鉴权**：
+
+```bash
+audioforge serve --host 0.0.0.0 --auth 'alice:强口令'      # 浏览器弹框
+audioforge serve --host 0.0.0.0 --token "$(python -c 'import secrets;print(secrets.token_urlsafe(32))')"
+```
+
+配额默认就开着（120 次/分、2000 文件/日、20 GB/日、磁盘 20 GB），见下一节。
 
 ---
 
 ## 安全边界与合规
 
-**默认只监听 `127.0.0.1`。** 服务没有任何鉴权，任何能访问端口的人都能上传文件并读回
-转换结果，所以：
+**默认只监听 `127.0.0.1`，且默认不鉴权** —— 这个组合是安全的；一旦你改 `--host`，
+就必须同时开 `--auth` 或 `--token`（CLI 会打印警告）。
 
-- 不要直接把它暴露到公网。真要对外，请放在带鉴权的反向代理后面，或自己在网关层加 IP 白名单。
+| 层 | 挡什么 | 默认 |
+| --- | --- | --- |
+| 监听地址 | 非本机访问 | `127.0.0.1` |
+| `--auth` / `--token` | 未授权访问 `/api/*` | 关（本机自用） |
+| `--max-mb` | 单个超大请求 | 200 MB |
+| `--rate` | 高频打点 | 120 次/分/IP |
+| `--daily-files` / `--daily-gb` | 单 IP 长期占用 | 2000 文件 / 20 GB 每日 |
+| `--disk-gb` | 磁盘被写满 | 20 GB，超了先清最旧结果 |
+| `--ttl` | 结果长期滞留 | 1 小时 |
+| 文件名清洗 | 路径穿越、非法字符 | 强制，不可关 |
+
+仍然需要注意：
+
+- **静态资源不鉴权**（`/`、`/app.js`、`/style.css`）—— 它们不含数据，且 Bearer 模式要靠页面
+  取令牌。真正的门在 `/api/*`。
+- **Bearer 令牌会出现在 `?token=`**（为了 `<a href>` 下载能带凭证）。它可能落在浏览器历史、
+  反代日志里。反代配置里已加 `Referrer-Policy: no-referrer` 防止外泄给第三方；介意的话就用
+  Basic 认证。
+- **配额是进程内计数，重启清零，多实例不共享**。要做多实例共享配额得换 Redis。
 - 容器内必须 `--host 0.0.0.0` 才能被端口映射访问，这是唯一需要放开的场景。
-- 单次请求上限默认 200 MB（`--max-mb`），结果默认保留 1 小时（`--ttl`），过期整目录清理。
 - 上传文件名会剥掉目录部分、控制字符和 `<>:"/\|?*`，落盘路径再做一次 `resolve()` 校验。
 
 **关于 NCM 与版权**：`.ncm` 是网易云音乐的客户端加密容器，解密能力只应作用于

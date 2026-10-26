@@ -9,9 +9,14 @@ services:
       - ./data:/data
     environment:
       - TZ=Asia/Shanghai
+      # 鉴权：在 .env 里设这两项即生效（模板见 deploy/env.example）；
+      # 都不设则不启用，只适合本机回环使用。
+      - AUDIOFORGE_AUTH=${AUDIOFORGE_AUTH:-}
+      - AUDIOFORGE_TOKEN=${AUDIOFORGE_TOKEN:-}
     healthcheck:
+      # 探活走 /api/ping：它不校验凭证、不计限速，配了 AUDIOFORGE_AUTH 也能用
       test: ["CMD", "python", "-c",
-             "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/api/health',timeout=3)"]
+             "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/api/ping',timeout=3)"]
       interval: 30s
       timeout: 5s
       retries: 3

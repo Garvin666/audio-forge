@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
 from . import __version__, ncm, transcode
+from .guard import Limits
 from .server import ServerConfig, serve
 
 __all__ = ["main"]
@@ -126,6 +128,29 @@ def cmd_formats(_: argparse.Namespace) -> int:
 
 
 def cmd_serve(args: argparse.Namespace) -> int:
+    if args.no_limits:
+        limits = Limits.unlimited()
+    else:
+        limits = Limits(
+            per_minute=args.rate,
+            files_per_day=args.daily_files,
+            mb_per_day=int(args.daily_gb * 1024),
+            disk_mb=int(args.disk_gb * 1024),
+        )
+
+    raw_auth = args.auth or os.environ.get("AUDIOFORGE_AUTH") or ""
+    user = password = None
+    if raw_auth:
+        user, sep, password = raw_auth.partition(":")
+        if not sep or not user:
+            print("--auth 需要「用户:口令」形式（口令里可以含冒号）", file=sys.stderr)
+            return 2
+    token = args.token or os.environ.get("AUDIOFORGE_TOKEN") or None
+
+    if args.host not in ("127.0.0.1", "localhost", "::1") and not (user or token):
+        print("警告：正在对非本机地址开放，但没有启用任何鉴权。"
+              "任何能访问该端口的人都能上传并读回结果。", file=sys.stderr)
+
     cfg = ServerConfig(
         host=args.host,
         port=args.port,
@@ -134,6 +159,10 @@ def cmd_serve(args: argparse.Namespace) -> int:
         work_dir=Path(args.workdir) if args.workdir else None,
         ffmpeg=args.ffmpeg,
         quiet=args.quiet,
+        auth_user=user,
+        auth_pass=password,
+        access_token=token,
+        limits=limits,
     )
     return serve(cfg)
 
@@ -226,6 +255,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--ttl", type=int, default=3600, help="结果保留秒数，默认 3600")
     p.add_argument("--workdir", default=None, help="临时工作目录")
     p.add_argument("-q", "--quiet", action="store_true", help="不打印访问日志")
+    p.add_argument("--auth", metavar="用户:口令",
+                   help="启用 HTTP Basic 认证（浏览器会弹框）；也可用环境变量 AUDIOFORGE_AUTH")
+    p.add_argument("--token", metavar="令牌",
+                   help="启用 Bearer 令牌；也可用环境变量 AUDIOFORGE_TOKEN。页面用 ?token= 传入")
+    p.add_argument("--rate", type=int, default=120, help="每 IP 每分钟请求上限，0 表示不限")
+    p.add_argument("--daily-files", type=int, default=2000, help="每 IP 每日文件数上限，0 表示不限")
+    p.add_argument("--daily-gb", type=float, default=20.0, help="每 IP 每日上传总量上限（GB），0 表示不限")
+    p.add_argument("--disk-gb", type=float, default=20.0, help="结果目录总量上限（GB），0 表示不限")
+    p.add_argument("--no-limits", action="store_true", help="关闭全部速率与配额限制")
     p.add_argument("--ffmpeg", **_FFMPEG_OPT)
     p.set_defaults(func=cmd_serve)
     return ap

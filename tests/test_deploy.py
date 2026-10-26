@@ -19,6 +19,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from audioforge.cli import build_parser  # noqa: E402
 
 UNIT = ROOT / "deploy" / "audio-forge.service"
+LEGACY_UNIT = ROOT / "deploy" / "audio-forge.service.rhel7"
 
 
 def join_continuations(text: str) -> list[str]:
@@ -140,6 +141,69 @@ class TestSystemdUnit(unittest.TestCase):
             "Environment=PYTHONUNBUFFERED=1",
             self.text,
             "缺 PYTHONUNBUFFERED=1：journalctl 里将看不到任何应用输出",
+        )
+
+
+# systemd 219（CentOS 7 / RHEL 7）上不存在的指令与取值。
+# 版本来源：上游 man/systemd.exec.xml 的 version-info 指针 + NEWS 双源核对
+# （ProtectKernelTunables/Modules/ControlGroups=232、ProtectSystem=strict=232、
+#  RestrictNamespaces=233、LockPersonality=235、RestrictSUIDSGID=242）。
+# 「不存在」是在 219 的 systemd 二进制指令表里逐条扫出来的（见 README §3.4）。
+MISSING_ON_219 = (
+    "ProtectKernelTunables",
+    "ProtectKernelModules",
+    "ProtectControlGroups",
+    "RestrictNamespaces",
+    "RestrictSUIDSGID",
+    "LockPersonality",
+    "ReadWritePaths",     # 219 只认旧名 ReadWriteDirectories
+    "MemoryMax",          # 219 只认旧名 MemoryLimit
+    "ProtectSystem=strict",  # strict 取值 232 才有，219 只认 yes/no/full
+)
+
+
+class TestLegacyUnit(unittest.TestCase):
+    """给老 systemd 用的降级单元：不许混进 219 不认识的指令。"""
+
+    def setUp(self) -> None:
+        self.assertTrue(LEGACY_UNIT.is_file(), f"缺少降级单元: {LEGACY_UNIT}")
+        self.text = LEGACY_UNIT.read_text(encoding="utf-8")
+        self.lines = join_continuations(self.text)
+        # 头部注释里刻意写明了「哪些指令被换掉了」，所以断言只看真正的配置行。
+        self.body = "\n".join(
+            ln for ln in self.lines if not ln.lstrip().startswith("#")
+        )
+
+    def _exec_start(self, lines: list[str]) -> str:
+        return next(ln.strip() for ln in lines if ln.strip().startswith("ExecStart="))
+
+    def test_no_directive_missing_on_219(self) -> None:
+        for key in MISSING_ON_219:
+            self.assertNotIn(key, self.body, f"降级单元里出现了 219 不支持的 {key}")
+
+    def test_keeps_baseline_hardening(self) -> None:
+        """219 认识的那些必须留住，不然降级就等于没加固。"""
+        for key in (
+            "NoNewPrivileges=yes",
+            "PrivateTmp=yes",
+            "PrivateDevices=yes",
+            "ProtectHome=yes",
+            "ProtectSystem=full",
+            "MemoryLimit=2G",
+            "TasksMax=128",
+            "ReadWriteDirectories=/var/lib/audio-forge",
+            "Environment=PYTHONUNBUFFERED=1",
+            "EnvironmentFile=",
+        ):
+            self.assertIn(key, self.body, f"降级单元缺少 {key}")
+
+    def test_exec_start_identical_to_main_unit(self) -> None:
+        """两份单元的 ExecStart 必须完全一致，否则 CLI 改了只改一边又会漂移。"""
+        main = join_continuations(UNIT.read_text(encoding="utf-8"))
+        self.assertEqual(
+            self._exec_start(main),
+            self._exec_start(self.lines),
+            "降级单元与完整单元的 ExecStart 不一致",
         )
 
 

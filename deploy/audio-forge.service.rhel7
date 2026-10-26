@@ -1,0 +1,70 @@
+# systemd 219 及更老版本的降级单元（CentOS 7 / RHEL 7 / Debian 8 一类）
+#
+# 什么时候用这个而不是 audio-forge.service：
+#   systemctl --version 第一行 < 242，且 systemd-analyze verify 对完整版单元
+#   打印 "Unknown lvalue ..." 时。完整版单元要求的 14 条指令里有 8 条在 219 上不存在
+#   （其中 RestrictSUIDSGID= 是 242 才引入的，是整份单元的最高门槛）。
+#
+# 与完整版的差异（每条都有实测依据，见 deploy/README.md §3.4）：
+#   ProtectSystem=strict      -> full      （strict 取值 232 才有；219 只认 yes/no/full）
+#   ReadWritePaths=           -> ReadWriteDirectories=（旧名，219 的指令表里就是后者）
+#   MemoryMax=                -> MemoryLimit=（旧名，cgroup v1 时代的写法）
+#   删掉 ProtectKernelTunables / ProtectKernelModules / ProtectControlGroups /
+#       RestrictNamespaces / RestrictSUIDSGID / LockPersonality（219 完全不认识）
+#
+# 保留的加固（219 都支持）：NoNewPrivileges、PrivateTmp、PrivateDevices、
+#   ProtectHome、TasksMax。
+# 丢失的保护要在别处补：内核模块/内核参数/命名空间与 setuid 相关的几条没有替代写法，
+#   只能靠「服务以非 root 用户跑 + 反代层限流」兜住，别把这类机器直接暴露到公网。
+
+[Unit]
+Description=audio-forge 音频转换服务（旧 systemd 降级版）
+Documentation=https://github.com/Garvin666/audio-forge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=audioforge
+Group=audioforge
+WorkingDirectory=/opt/audio-forge
+
+# 口令与令牌放这里，别写进命令行（ps 能看到）
+EnvironmentFile=/etc/audio-forge/env
+
+# 必须关掉 stdout 缓冲：systemd 下 stdout 是管道，Python 默认块缓冲，
+# 结果 journalctl -u audio-forge 里**一行应用输出都没有**（连启动横幅都收不到），
+# 排查时会以为服务没起来。Docker 路径没这问题是因为 Dockerfile 里设了同一个变量。
+# 这一条在 219 / 245 / 257 上是同样的必要性，已分别在三个版本上实测过。
+Environment=PYTHONUNBUFFERED=1
+
+# 只监听回环，公网流量由 Nginx 转发进来
+ExecStart=/opt/audio-forge/venv/bin/audioforge serve \
+    --host 127.0.0.1 \
+    --port 8000 \
+    --workdir /var/lib/audio-forge \
+    --max-mb 200 \
+    --ttl 3600 \
+    --rate 120 \
+    --daily-files 2000 \
+    --daily-gb 20 \
+    --disk-gb 20 \
+    --quiet
+
+Restart=on-failure
+RestartSec=3
+
+# --- 加固（只留 219 认识的）---
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=full
+ProtectHome=yes
+MemoryLimit=2G
+TasksMax=128
+
+# 结果目录（旧名；ProtectSystem=full 下 /var 本来就可写，这里只是把意图写明）
+ReadWriteDirectories=/var/lib/audio-forge
+
+[Install]
+WantedBy=multi-user.target

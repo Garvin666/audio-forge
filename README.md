@@ -287,7 +287,8 @@ audio-forge/
 ├── deploy/
 │   ├── README.md            对外部署：鉴权模式 / 配额 / systemd / Nginx / 自检清单
 │   ├── nginx.conf           TLS 反代 + 连接级限流 + 超时 + 安全头
-│   ├── audio-forge.service  systemd 单元（含加固项）
+│   ├── audio-forge.service  systemd 单元（含加固项，需 ≥ 242）
+│   ├── audio-forge.service.rhel7  老 systemd 降级版（< 242，如 CentOS 7 的 219）
 │   └── env.example          口令与令牌模板（`/etc/audio-forge/env` 或 compose 的 `.env`）
 ├── .github/workflows/ci.yml Python 3.9–3.13 矩阵测试
 ├── Dockerfile
@@ -424,7 +425,8 @@ Docker：见 `Dockerfile` / `docker-compose.yml`，镜像里装了 ffmpeg，结�
 
 公网部署：**[deploy/README.md](deploy/README.md)** 给了 systemd 单元、Nginx 反代配置、
 环境变量模板和一份「部署后自检」清单；**[docs/DEPLOY.md](docs/DEPLOY.md)** 是本机 / Docker /
-反代的完整说明。
+反代的完整说明。systemd 单元要求 **≥ 242**（跨版本逐条实测见 `deploy/README.md` §3.4），
+更老的系统用 `deploy/audio-forge.service.rhel7`。
 
 对外之前必须做一件事 —— **打开鉴权**：
 

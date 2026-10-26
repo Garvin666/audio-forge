@@ -86,6 +86,10 @@ journalctl -u audio-forge -f
 > 上面是最小示例。带独立用户、`ProtectSystem=strict`、日配额与磁盘闸门的**加固版**在
 > [`deploy/audio-forge.service`](../deploy/audio-forge.service)，配套的安装、自检与实测数据见
 > [`deploy/README.md`](../deploy/README.md) §3。
+>
+> **版本要求**：加固版需要 **systemd ≥ 242**（卡在 `RestrictSUIDSGID=`）。
+> 更老的系统（CentOS 7 是 219）改用 [`deploy/audio-forge.service.rhel7`](../deploy/audio-forge.service.rhel7)，
+> 逐条的版本对照与实测依据见 [`deploy/README.md`](../deploy/README.md) §3.4。
 
 ### 开机自启（Windows）
 
@@ -198,7 +202,8 @@ audioforge serve --host 127.0.0.1 --port 8000
 | 文件 | 用途 |
 | --- | --- |
 | `deploy/nginx.conf` | TLS + `limit_req`（30 r/s）+ `client_max_body_size` + 900s 超时 + 安全头 |
-| `deploy/audio-forge.service` | systemd 单元，含 `ProtectSystem=strict`、`PrivateTmp` 等加固 |
+| `deploy/audio-forge.service` | systemd 单元（≥ 242），含 `ProtectSystem=strict`、`PrivateTmp` 等加固 |
+| `deploy/audio-forge.service.rhel7` | 老 systemd 降级版（< 242，如 CentOS 7 的 219） |
 | `deploy/env.example` | 口令/令牌模板，放 `/etc/audio-forge/env` 并 `chmod 600` |
 | `deploy/README.md` | 三种鉴权模式、配额取舍、自检 curl 清单、常见问题 |
 

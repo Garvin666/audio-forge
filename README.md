@@ -59,6 +59,9 @@ docker run --rm -p 127.0.0.1:8000:8000 -v "$PWD/data:/data" audio-forge
 
 或 `docker compose up -d`（`docker-compose.yml` 默认只绑回环地址）。
 
+镜像已实测跑通：`.ncm` 解密与 mp3→flac 转码都在容器里验过，输出与真机逐字节一致；
+`/data` 卷重启不丢。构建若卡在 apt 下载，见 [docs/DEPLOY.md §2.2](docs/DEPLOY.md)。
+
 ---
 
 ## Web 平台怎么用

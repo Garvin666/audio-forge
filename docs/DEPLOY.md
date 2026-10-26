@@ -123,6 +123,41 @@ docker compose logs -f
 - 结果目录挂到 `/data`，容器重建不丢正在下载的文件。
 - 磁盘要留够：转成 wav 时体积约为源文件的 3–4 倍，TTL 内的结果都会占着盘。
 
+### 2.1 这套 Docker 配置的实测记录
+
+不是「照文档写一遍」，是真的构建、起容器、跑真文件验过的：
+
+| 项 | 实测值 |
+| --- | --- |
+| 构建（含 apt 装 ffmpeg） | 3 分 49 秒，全量约 130 MB 依赖 |
+| 构建（改代码重建，走缓存） | 6.2 秒 |
+| 镜像大小 | 832 MB（其中 ffmpeg 依赖的系统库约 449 MB，应用本体仅 484 KB） |
+| 容器常驻内存 | 17 MB |
+| healthcheck | 启动后第 2 次探询转 `healthy`，`/api/ping` 返回 200 |
+| 真文件转换 | 10.0 MB `.ncm` → 9 841 292 B mp3，与真机直解**逐字节一致**（`cmp` 无差异） |
+| 通用转码 | mp3 → flac，1.38 秒，`ffprobe` 验为 48 kHz 双声道 245.952 s |
+| 卷持久化 | 重启容器后旧任务仍可下载，sha256 不变 |
+| 超限 | 205 MB 上传 → **5 ms** 内返回 413（未读 body 即拒），服务不受影响 |
+
+### 2.2 构建卡在 apt 时怎么处理
+
+一次 ffmpeg 要拉 ~110 个包 / ~130 MB，任何一个包失败整层就废掉。`Dockerfile` 里已经做了
+`Acquire::Retries=8` + 5 次外层循环 + 已下好的 `.deb` 复用，正常情况下能自己扛过抖动。
+
+如果仍反复失败：
+
+```bash
+# 换国内源（Dockerfile 已内置该参数，改源比反复重试有效）
+docker build --build-arg APT_MIRROR=mirrors.aliyun.com -t audio-forge .
+
+# 别把本机代理硬塞进构建：容器到宿主的代理链路常常是 502 的来源
+# 实测「不带任何 --build-arg HTTP_PROXY」的直连比走代理稳
+```
+
+> 踩过的坑：`--build-arg HTTP_PROXY=http://127.0.0.1:xxxx` 里的 `127.0.0.1` 指的是**容器自己**，
+> 不是宿主机，会得到 `Connection refused`；要指向宿主得用 `http://http.docker.internal:3128`
+> （仅 Docker Desktop）。而这条链路在批量下载时容易回 502 —— 直连反而更稳。
+
 ---
 
 ## 3. 公网

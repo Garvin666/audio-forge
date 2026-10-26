@@ -121,6 +121,24 @@ audio-forge 1.0.0  http://127.0.0.1:8000
   配额     : 120 次/分 · 2000 文件/日 · 20 GB/日 · 磁盘 20 GB
 ```
 
+### 3.1 装之前先验单元文件
+
+```bash
+# 判据是「零输出」而不是只看退出码 —— 见下方说明
+sudo cp deploy/audio-forge.service /etc/systemd/system/
+test -z "$(systemd-analyze verify /etc/systemd/system/audio-forge.service 2>&1)" \
+  && echo "单元文件 OK" || echo "有告警/错误，看上面输出"
+```
+
+> **为什么不能只看退出码**：实测 `systemd-analyze verify` 对
+> `ProtectSystem=banana`（非法枚举值）和 `Restrat=`（键名拼错）**仍然返回 0**，
+> 只在 stdout 抱怨一句就继续。唯一会返回非 0 的是「`ExecStart` 指向的可执行文件不存在」。
+> 所以正确判据是 **输出为空 + 退出码 0**，两个都要。
+>
+> 另外：`verify` 只检查 systemd 自己的语法与语义，**不会检查你传给程序的参数对不对**。
+> `ExecStart` 里那 10 个 `--host/--port/--workdir/...` 是否都存在，得另外核
+> （`audioforge serve --help` 对一遍）。
+
 ---
 
 ## 4. Nginx 接入

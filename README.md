@@ -188,7 +188,16 @@ audioforge formats
 
 # 起 Web 平台（改端口 / 改上限 / 只写日志外）
 audioforge serve --port 9000 --max-mb 500 --ttl 7200
+
+# 公网部署：开鉴权 + 只信指定反代的 X-Forwarded-For + 给产物设体积上限
+audioforge serve --host 0.0.0.0 --auth 'alice:强口令' \
+                 --trust-proxy --trusted-proxy 172.18.0.0/16 --max-out-mb 512
 ```
+
+`serve` 的其余常用项：`--concurrency 4`（转码并发）、`--download-slots 8`（下载并发，
+默认按并发数自动、至少 8）、`--conn-timeout 60`（慢连接多久断开）、`--max-out-mb 2048`
+（单产物上限，0 表示不限）、`--trust-proxy` / `--trusted-proxy`（反代后取真实 IP，
+两个同时成立才生效）。全部参数见 `audioforge serve -h`。
 
 `--ffmpeg /path/to/ffmpeg` 可显式指定 ffmpeg；也支持环境变量
 `AUDIOFORGE_FFMPEG`、`FFMPEG_BIN`、`FFMPEG_PATH`。
@@ -505,9 +514,9 @@ NCM 的音频段用 256 字节周期的 keystream 异或。逐字节 Python 循�
 
 | | 整包进内存（旧） | 流式（现在） |
 | --- | --- | --- |
-| 下载 RSS 增量 | +96.2 MB（1.00× 文件大小） | **+2.3 MB（0.02×）** |
-| `HEAD` RSS 增量 | +99.6 MB | 同量级微小 |
-| 200 MB 外推 | ~200 MB | ~4.8 MB |
+| 下载 RSS 增量 | +96.2 MB（1.00× 文件大小） | **+2.2 MB（0.02×）** |
+| `HEAD` RSS 增量 | +99.6 MB | 同量级微小（只 `stat`，不读盘） |
+| 200 MB 外推 | ~200 MB | ~4.6 MB |
 
 顺带给了解析式进度以外的东西：单段 `Range` 支持断点续传，浏览器拖进度条也能用。
 
@@ -586,6 +595,9 @@ audioforge serve --host 0.0.0.0 --token "$(python -c 'import secrets;print(secre
 ```
 
 配额默认就开着（120 次/分、2000 文件/日、20 GB/日、磁盘 20 GB），见下一节。
+
+版本与逐条变更见 **[CHANGELOG.md](CHANGELOG.md)**；发现漏洞怎么报、以及部署前必须知道的
+三件事见 **[SECURITY.md](SECURITY.md)**。
 
 ---
 

@@ -54,7 +54,16 @@
     ? (n / 1048576).toFixed(1) + ' MB'
     : Math.max(1, Math.round(n / 1024)) + ' KB';
 
-  const isNcm = (name) => /\.ncm$/i.test(name);
+  // 加密容器后缀（.ncm + QMC 家族）由 /api/health 下发，前端不重抄这份列表
+  const encryptedExt = () => {
+    const list = state.health && state.health.encrypted_ext;
+    return (list && list.length ? list : ['.ncm']).map((e) => e.toLowerCase());
+  };
+
+  const isEncrypted = (name) => {
+    const low = name.toLowerCase();
+    return encryptedExt().some((ext) => low.endsWith(ext));
+  };
 
   const maxUploadMb = () => {
     const lim = state.health && state.health.limits;
@@ -89,7 +98,7 @@
     const canTranscode = !!(h.capabilities && h.capabilities.transcode);
     const n = (h.formats || []).length;
 
-    el.status.textContent = canTranscode ? `就绪 · ${n} 种目标格式` : '仅 NCM 通道';
+    el.status.textContent = canTranscode ? `就绪 · ${n} 种目标格式` : '仅解密通道';
     el.status.className = 'badge ' + (canTranscode ? 'badge-ok' : 'badge-warn');
 
     for (const fmt of h.formats || []) {
@@ -101,7 +110,7 @@
     }
     if (!canTranscode) {
       el.quality.disabled = true;
-      el.ffnote.textContent = '未检测到 ffmpeg：只能解密 .ncm（输出其原始 mp3/flac），通用转码已停用';
+      el.ffnote.textContent = '未检测到 ffmpeg：只能解密 .ncm / QMC（输出其原始格式），通用转码已停用';
     } else {
       // ffmpeg -version 的第一行很长，只取版本号
       const m = /version\s+([0-9][\w.\-]*)/.exec(h.ffmpeg || '');
@@ -111,7 +120,10 @@
     if (maxUploadMb()) {
       el.ffnote.textContent += ` · 单次上限 ${maxUploadMb()} MB`;
     }
-    el.picker.accept = (h.formats || []).map((f) => '.' + f).join(',') + ',.ncm';
+    el.picker.accept = [
+      ...(h.formats || []).map((f) => '.' + f),
+      ...encryptedExt(),
+    ].join(',');
   }
 
   /* ---------------- 文件列表 ---------------- */
@@ -177,9 +189,9 @@
   function precheck() {
     const target = el.target.value;
     if (target !== 'auto') return null;
-    const others = state.files.filter((f) => !isNcm(f.name));
+    const others = state.files.filter((f) => !isEncrypted(f.name));
     if (others.length) {
-      return `「${others[0].name}」不是 NCM 文件，请先选择目标格式（当前为自动）。`;
+      return `「${others[0].name}」不是加密容器（.ncm / QMC），请先选择目标格式（当前为自动）。`;
     }
     return null;
   }

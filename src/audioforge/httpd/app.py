@@ -121,7 +121,7 @@ def serve(cfg: ServerConfig) -> int:
     print(f"audio-forge {__version__}  http://{shown}:{cfg.port}")
     print(f"  临时目录 : {cfg.root}")
     print(f"  上传上限 : {cfg.max_bytes / (1 << 20):.0f} MB")
-    print(f"  通用转码 : {httpd.ffmpeg_version or '不可用（未找到 ffmpeg，仅 NCM 通道可用）'}")
+    print(f"  通用转码 : {httpd.ffmpeg_version or '不可用（未找到 ffmpeg，仅解密通道可用）'}")
     if guard.mode == "none":
         print("  鉴权     : 未启用 —— 任何能访问该端口的人都能上传，只应在本机使用")
     else:

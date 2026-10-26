@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from . import __version__, ncm, transcode
+from . import __version__, ncm, qmc, transcode
 from .guard import Limits
 from .httpd.config import DEFAULT_TRUSTED_PROXIES
 from .server import ServerConfig, serve
@@ -16,6 +16,8 @@ from .server import ServerConfig, serve
 __all__ = ["main"]
 
 _TRUTHY = {"1", "true", "yes", "on"}
+# QMC 的后缀太多（16 个），统一从模块里取，免得两处维护
+_QMC_EXT = {"." + ext for ext in qmc.EXTENSIONS}
 
 
 def _env_flag(name: str) -> bool:
@@ -105,6 +107,46 @@ def cmd_ncm(args: argparse.Namespace) -> int:
                     f"{check['expected_bytes']} 字节 —— 文件可能被截断，建议核对原文件",
                     file=sys.stderr,
                 )
+            ok += 1
+        except Exception as exc:  # noqa: BLE001
+            print(f"[FAIL] {src.name}: {type(exc).__name__}: {exc}", file=sys.stderr)
+            fail += 1
+
+    print(f"\n完成 {ok} 个，失败 {fail} 个")
+    return 0 if fail == 0 else 1
+
+
+def cmd_qmc(args: argparse.Namespace) -> int:
+    targets = _expand(args.input, _QMC_EXT, args.recursive)
+    if not targets:
+        print("没有找到 QMC 文件（.mflac / .mgg / .qmc0 / .qmcflac…）", file=sys.stderr)
+        return 2
+
+    ok = fail = 0
+    for src in targets:
+        out_dir = Path(args.outdir) if args.outdir else src.parent
+        try:
+            path, info = qmc.decrypt(src, out_dir, ekey=args.ekey)
+            how = info.cipher or "?"
+            if info.footer and info.footer.startswith("none"):
+                how = "静态密钥"
+            line = (
+                f"[OK] {path.name}  {_fmt_size(path.stat().st_size)}  {(info.fmt or '?').upper()}"
+            )
+            line += f"  {how}"
+            if info.key_len:
+                line += f"（key {info.key_len} 字节）"
+            if args.to:
+                path = transcode.convert(
+                    path,
+                    out_dir,
+                    args.to,
+                    quality=args.quality,
+                    bitrate=args.bitrate,
+                    ffmpeg=args.ffmpeg,
+                )
+                line += f"  → {path.name}"
+            print(line)
             ok += 1
         except Exception as exc:  # noqa: BLE001
             print(f"[FAIL] {src.name}: {type(exc).__name__}: {exc}", file=sys.stderr)
@@ -231,25 +273,35 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return serve(cfg)
 
 
+def _probe_row(src: Path) -> dict:
+    """按后缀分流：QMC 只能看尾部，NCM 才能拿到完整元数据。"""
+    if qmc.is_qmc_name(src.name):
+        return {"kind": "qmc", **qmc.probe(src).summary()}
+    return {"kind": "ncm", **ncm.probe(src).summary()}
+
+
 def cmd_probe(args: argparse.Namespace) -> int:
     import json
 
-    targets = _expand(args.input, {".ncm"}, args.recursive)
+    targets = _expand(args.input, {".ncm"} | _QMC_EXT, args.recursive)
     if not targets:
-        print("没有找到 .ncm 文件", file=sys.stderr)
+        print("没有找到 .ncm / QMC 文件", file=sys.stderr)
         return 2
     rows = []
     for src in targets:
         try:
-            rows.append(ncm.probe(src).summary())
+            rows.append(_probe_row(src))
         except Exception as exc:  # noqa: BLE001
-            rows.append({"file": src.name, "error": f"{type(exc).__name__}: {exc}"})
+            rows.append({"kind": "?", "file": src.name, "error": f"{type(exc).__name__}: {exc}"})
     if args.json:
         print(json.dumps(rows, ensure_ascii=False, indent=2))
     else:
         for r in rows:
             if "error" in r:
                 print(f"[FAIL] {r['file']}: {r['error']}")
+            elif r["kind"] == "qmc":
+                hint = "需要 --ekey" if r["needs_ekey"] else f"内嵌密钥 {r['ekey_len']} 字符"
+                print(f"{r['file']}  QMC  footer={r['footer']}  {hint}")
             else:
                 who = " / ".join(r["artists"]) or "未知"
                 dur = f"{r['duration_s']}s" if r["duration_s"] else "?"
@@ -257,7 +309,9 @@ def cmd_probe(args: argparse.Namespace) -> int:
                     f"{r['file']}  {r['format'].upper()}  {dur}  "
                     f"{r['bitrate'] or '?'}bps  {r['title'] or '?'} — {who}"
                 )
-    return 0
+    # 有解析失败就回非零：否则 `if audioforge probe x; then` 会静默放行坏文件
+    # （batch 语义保留 —— 单个失败不影响其它文件被探测，只是整体退出码不为 0）
+    return 1 if any("error" in r for r in rows) else 0
 
 
 # --------------------------------------------------------------------------- #
@@ -268,13 +322,17 @@ def cmd_probe(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="audioforge",
-        description="audio-forge：NCM 解密 + 通用音频格式转换（本地 Web 平台见 serve）",
+        description="audio-forge：NCM / QMC 解密 + 通用音频格式转换（本地 Web 平台见 serve）",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "示例：\n"
             "  audioforge ncm song.ncm\n"
             "  audioforge ncm 专辑目录/ -r --cover\n"
             "  audioforge ncm song.ncm --to wav\n"
+            "  audioforge qmc song.mflac\n"
+            "  audioforge qmc 歌单目录/ -r\n"
+            "  audioforge qmc song.mgg --ekey '...'\n"
+            "  audioforge probe song.mflac\n"
             "  audioforge convert *.flac -f mp3 --quality high\n"
             "  audioforge serve --port 8000\n"
         ),
@@ -301,6 +359,21 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--ffmpeg", **_FFMPEG_OPT)
     p.set_defaults(func=cmd_ncm)
 
+    p = sub.add_parser("qmc", help="把 QMC 系列（.mflac/.mgg/.qmc0…）还原成原始音频")
+    p.add_argument("input", nargs="+", help="QMC 文件或目录")
+    p.add_argument("-o", "--outdir", default=None, **common_out)
+    p.add_argument("-r", "--recursive", action="store_true", help="递归子目录")
+    p.add_argument(
+        "--ekey",
+        default=None,
+        help="文件尾部没带 ekey 时手工指定（如 STag 尾部、或从抓包拿到的那串 base64）",
+    )
+    p.add_argument("--to", default=None, help="解出后再转成该格式（如 wav/mp3/flac）")
+    p.add_argument("--quality", default="high", choices=transcode.QUALITY_NAMES)
+    p.add_argument("--bitrate", default=None, help="覆盖码率，如 320k")
+    p.add_argument("--ffmpeg", **_FFMPEG_OPT)
+    p.set_defaults(func=cmd_qmc)
+
     p = sub.add_parser("convert", help="通用音频格式互转（需 ffmpeg）")
     p.add_argument("input", nargs="+", help="音频文件或目录")
     p.add_argument("-f", "--format", required=True, choices=sorted(transcode.FORMATS))
@@ -311,8 +384,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--ffmpeg", **_FFMPEG_OPT)
     p.set_defaults(func=cmd_convert)
 
-    p = sub.add_parser("probe", help="只读 .ncm 头部信息，不解音频")
-    p.add_argument("input", nargs="+")
+    p = sub.add_parser("probe", help="只读容器/尾部信息，不解音频")
+    p.add_argument("input", nargs="+", help=".ncm 或 QMC 文件（目录亦可）")
     p.add_argument("-r", "--recursive", action="store_true")
     p.add_argument("--json", action="store_true", help="以 JSON 输出")
     p.set_defaults(func=cmd_probe)

@@ -21,6 +21,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from test_ncm import META, build_ncm, fake_audio  # noqa: E402
+from test_qmc import (  # noqa: E402
+    encrypt_payload,
+    make_ekey,
+    make_key,
+    make_plain,
+    pcv1_footer,
+    qtag_footer,
+    stag_footer,
+)
 
 from audioforge.guard import Limits  # noqa: E402
 from audioforge.server import ServerConfig, create_server  # noqa: E402
@@ -130,6 +139,17 @@ class ServerCase(HttpMixin, unittest.TestCase):
         self.assertIn("mp3", data["formats"])
         self.assertEqual(data["auth"]["mode"], "none")
 
+    def test_health_reports_qmc_and_encrypted_ext(self):
+        # 加密容器后缀由后端下发，前端据此拼 picker 的 accept —— 少一个就选不上文件
+        status, body, _ = self.get("/api/health")
+        self.assertEqual(status, 200)
+        data = json.loads(body)
+        self.assertTrue(data["capabilities"]["qmc"])
+        ext = data["encrypted_ext"]
+        for want in (".ncm", ".mflac", ".mgg", ".qmc0", ".bkcflac"):
+            self.assertIn(want, ext)
+        self.assertEqual(len(ext), len(set(ext)), "后缀列表不该有重复")
+
     def test_unknown_route_404(self):
         status, _, _ = self.get("/nope")
         self.assertEqual(status, 404)
@@ -154,6 +174,84 @@ class ServerCase(HttpMixin, unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(payload, audio)
         self.assertIn("attachment", headers.get("Content-Disposition", ""))
+
+    # ---------- QMC ---------- #
+
+    def _qmc_blob(self, master: bytes, footer: bytes) -> tuple[bytes, bytes]:
+        plain = make_plain(20_000)
+        return encrypt_payload(plain, master) + footer, plain
+
+    def test_qmc_upload_and_download(self):
+        master = make_key(512)  # RC4 通道
+        blob, plain = self._qmc_blob(master, qtag_footer(make_ekey(master, v2=True)))
+        status, data = self.upload("song.mflac", blob)
+        self.assertEqual(status, 200, data)
+        row = data["results"][0]
+        self.assertTrue(row["ok"], row)
+        # 输出后缀按嗅探结果定，不信 .mflac 这个名字
+        self.assertEqual(row["name"], "song.flac")
+        self.assertEqual(row["size"], len(plain))
+        self.assertIn("QMC 解密", row["note"])
+        self.assertEqual(row["meta"]["cipher"], "rc4")
+
+        status, payload, _ = self.get(row["url"])
+        self.assertEqual(status, 200)
+        self.assertEqual(payload, plain)
+
+    def test_qmc_target_equals_source_format_skips_ffmpeg(self):
+        # target == 解出的格式时不该白跑一趟转码（没有 ffmpeg 也能过）
+        master = make_key(128)  # Map 通道
+        blob, plain = self._qmc_blob(master, pcv1_footer(make_ekey(master)))
+        status, data = self.upload("x.mflac", blob, target="flac")
+        self.assertEqual(status, 200, data)
+        row = data["results"][0]
+        self.assertTrue(row["ok"], row)
+        self.assertEqual(row["name"], "x.flac")
+        self.assertNotIn("→", row["note"])
+
+    def test_qmc_missing_ekey_is_per_file_error(self):
+        # STag 尾部没有密钥：整批仍回 200，错误只落在这一条上
+        master = make_key(512)
+        blob, _ = self._qmc_blob(master, stag_footer())
+        status, data = self.upload("stream.mflac", blob)
+        self.assertEqual(status, 200, data)
+        self.assertTrue(data["ok"])
+        row = data["results"][0]
+        self.assertFalse(row["ok"])
+        self.assertIn("没有内嵌 EKey", row["error"])
+
+    @unittest.skipUnless(find_ffmpeg(), "本机没有 ffmpeg")
+    def test_qmc_upload_transcodes(self):
+        import subprocess
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            wav = Path(tmp) / "tone.wav"
+            subprocess.run(
+                [
+                    find_ffmpeg(),
+                    "-y",
+                    "-loglevel",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "sine=frequency=440:duration=0.3",
+                    "-c:a",
+                    "pcm_s16le",
+                    str(wav),
+                ],
+                check=True,
+            )
+            real = wav.read_bytes()
+        master = make_key(512)
+        blob = encrypt_payload(real, master) + pcv1_footer(make_ekey(master))
+        status, data = self.upload("tone.mflac", blob, target="mp3")
+        self.assertEqual(status, 200, data)
+        row = data["results"][0]
+        self.assertTrue(row["ok"], row)
+        self.assertEqual(row["name"], "tone.mp3")
+        self.assertIn("→ mp3", row["note"])
 
     def test_two_files_at_once(self):
         a = build_ncm(fake_audio(20_000, seed=1), meta=META)

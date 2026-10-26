@@ -16,7 +16,7 @@ from http import HTTPStatus
 from pathlib import Path
 from urllib.parse import quote
 
-from .. import ncm, transcode
+from .. import ncm, qmc, transcode
 from ..guard import Denied
 from ..multipart import MultipartError, get_boundary, parse_multipart
 
@@ -24,6 +24,8 @@ __all__ = ["handle"]
 
 _SPOOL_BLOCK = 1 << 16
 _JOB_ID = re.compile(r"^[0-9a-fA-F]{8,64}$")
+# QMC 后缀有 16 个，从模块取，别在这儿重抄一遍
+_QMC_EXT = frozenset("." + ext for ext in qmc.EXTENSIONS)
 
 
 def handle(h) -> None:
@@ -181,8 +183,31 @@ def _convert_one(
                 note += f" → {want}"
             return _ok_item(h, name, produced, note, info.summary(), token, warning=warn)
 
+        if ext in _QMC_EXT:
+            # QMC 不带元数据，拿不到「时长×码率」这种交叉校验，故没有 _size_warning
+            decoded, qinfo = qmc.decrypt(src, out_dir)
+            produced = decoded
+            how = qinfo.cipher or "?"
+            if (qinfo.footer or "").startswith("none"):
+                how = "静态密钥"
+            note = f"QMC 解密（{qinfo.fmt}，{how}）"
+            want = target if target not in ("auto", "", qinfo.fmt) else ""
+            if want:
+                produced = transcode.convert(
+                    decoded,
+                    out_dir,
+                    want,
+                    quality=quality,
+                    bitrate=bitrate,
+                    ffmpeg=ffmpeg,
+                    max_bytes=cap,
+                )
+                decoded.unlink(missing_ok=True)
+                note += f" → {want}"
+            return _ok_item(h, name, produced, note, qinfo.summary(), token)
+
         if target in ("auto", ""):
-            raise ValueError("非 NCM 文件必须指定目标格式")
+            raise ValueError("非加密容器（.ncm / QMC）必须指定目标格式")
         produced = transcode.convert(
             src,
             out_dir,

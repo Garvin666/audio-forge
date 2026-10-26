@@ -1,6 +1,6 @@
 # audio-forge
 
-**NCM 容器解密 + 通用音频格式转换，附一个零依赖的本地 Web 上传平台。**
+**NCM / QMC 容器解密 + 通用音频格式转换，附一个零依赖的本地 Web 上传平台。**
 
 纯 Python 实现，`pip install` 之后一条命令就能在浏览器里传文件、换格式、下载结果。
 AES-128、RC4 变体 keystream、multipart 解析、HTTP 服务全部自己写，**没有任何第三方
@@ -11,22 +11,29 @@ Python 依赖**（`pip` 不会下载任何东西）。唯一的可选外部依�
 <img alt="python" src="https://img.shields.io/badge/python-3.9%2B-3776ab">
 <img alt="deps" src="https://img.shields.io/badge/dependencies-0-brightgreen">
 <img alt="license" src="https://img.shields.io/badge/license-MIT-blue">
-<img alt="tests" src="https://img.shields.io/badge/tests-250%20passed-brightgreen">
-<img alt="coverage" src="https://img.shields.io/badge/coverage-84%25-green">
+<img alt="tests" src="https://img.shields.io/badge/tests-324%20passed-brightgreen">
+<img alt="coverage" src="https://img.shields.io/badge/coverage-86%25-green">
 </p>
 
 ![上传页](docs/screenshot.png)
 
 ---
 
-## 两个通道
+## 三个通道
 
 | 通道 | 输入 | 输出 | 依赖 | 说明 |
 | --- | --- | --- | --- | --- |
 | **NCM 解密** | `.ncm` | 原始 `mp3` / `flac` | 无 | 剥离容器，逐字节还原码流；可顺带导出封面 |
+| **QMC 解密** | `.mflac` `.mgg` `.qmc0` `.qmc3` `.qmcflac`… | 原始 `flac` / `ogg` / `mp3` / `m4a` | 无 | 流加密，无头无长度；解完嗅探格式（见下） |
 | **通用转码** | 任意 ffmpeg 可读音频 | `mp3` `flac` `wav` `m4a` `aac` `ogg` `opus` `alac` `aiff` | ffmpeg | 有损格式支持 low/medium/high 三档或自定义码率 |
 
-两个通道可以串联：`audioforge ncm song.ncm --to wav` 一步完成「解密 + 转码」。
+通道可以串联：`audioforge ncm song.ncm --to wav`、`audioforge qmc song.mflac --to mp3`
+一步完成「解密 + 转码」。
+
+**QMC 与 NCM 的结构差别**：NCM 是容器（有魔数、能按块切开），QMC 是**整文件流加密**，
+没有头也没有长度字段 —— 所以它没有「读头就拒绝」这条路，只能先解 4 KiB 再嗅探。
+`.mflac/.mgg` 的密钥多半内嵌在文件尾部；尾部是 `STag` / `musicex` 的那批**离线解不了**
+（密钥在服务器上），得用 `--ekey` 手工给。详见 [docs/FORMAT.md](docs/FORMAT.md#qmc-qq-音乐)。
 
 ---
 
@@ -185,14 +192,22 @@ audioforge ncm song.ncm --to wav
 # 解出来顺便把歌名/歌手/专辑/封面写成 ID3v2.3 标签（mp3 专有，码流不动）
 audioforge ncm song.ncm --tags
 
+# 解 QQ 音乐（.mflac / .mgg / .qmc0 / .qmcflac …），批量同理
+audioforge qmc song.mflac
+audioforge qmc ~/Music/QQmusic/ -r -o ~/Music/out
+
+# 尾部没有内嵌密钥的文件（STag / musicex）要手工给 ekey
+audioforge qmc song.mflac --ekey 'UVFNdXNpYyBFbmNWMixLZXk6...'
+
 # 通用互转：flac -> mp3 320k
 audioforge convert album/*.flac -f mp3 --quality high -o out/
 
 # 自定义码率
 audioforge convert a.wav -f opus --bitrate 96k
 
-# 只看 .ncm 头部信息，不解音频
+# 只看头部信息，不解音频（NCM 看容器，QMC 看尾部）
 audioforge probe song.ncm --json
+audioforge probe song.mflac --json
 
 # 列出支持的格式与编码参数
 audioforge formats
@@ -243,9 +258,10 @@ Web 页面就是这套接口的客户端，可以单独调用。
 ```json
 {
   "ok": true,
-  "version": "1.0.0",
+  "version": "1.1.0",
   "ffmpeg": "ffmpeg version 7.1-essentials_build ...",
-  "capabilities": { "ncm": true, "transcode": true },
+  "capabilities": { "ncm": true, "qmc": true, "transcode": true },
+  "encrypted_ext": [".bkcape", ".bkcflac", "…", ".ncm", ".qmc0", ".qmc3", ".qmcflac"],
   "formats": ["aac", "aiff", "alac", "flac", "m4a", "mp3", "ogg", "opus", "wav"],
   "limits": {
     "max_upload_mb": 200,
@@ -267,7 +283,10 @@ Web 页面就是这套接口的客户端，可以单独调用。
 }
 ```
 
-`ffmpeg` 为 `null` 表示只支持 NCM 通道。启用鉴权后这个接口本身也要凭证。
+`ffmpeg` 为 `null` 表示只支持解密通道（NCM + QMC）。启用鉴权后这个接口本身也要凭证。
+
+`encrypted_ext` 把「哪些后缀算加密容器」交给后端下发：前端不重抄这份名单，
+以后加格式只改一处（`qmc.EXTENSIONS`）。
 
 这个接口**故意比前两个重**（要序列化限额与用量），别拿它当探针 —— 它曾经每次
 请求都扫一遍 PATH、起一次 `ffmpeg -version` 子进程、`rglob` 整个结果目录，
@@ -281,7 +300,7 @@ Web 页面就是这套接口的客户端，可以单独调用。
 ```json
 {
   "ok": true,
-  "version": "1.0.0",
+  "version": "1.1.0",
   "uptime_s": 3612.4,
   "python": "3.12.7",
   "platform": "Linux-6.6.32-x86_64-with",
@@ -423,6 +442,7 @@ audio-forge/
 │   ├── py.typed             PEP 561 标记：本包自带类型注解
 │   ├── aes.py               纯 Python AES-128-ECB 加解密 + PKCS#7
 │   ├── ncm.py               NCM 容器解析、keystream 生成、流式解密（.part 原子写）
+│   ├── qmc.py               QMC 解密：静态表 / Map / RC4 + EKey 派生 + 四种尾部（.part 原子写）
 │   ├── id3.py               ID3v2.3 标签构造（`--tags`，只前置、不动码流）
 │   ├── transcode.py         ffmpeg 探测与转码参数翻译（含 -fs 体积封顶）
 │   ├── multipart.py         零依赖 multipart/form-data 解析（mmap 切片）
@@ -444,6 +464,7 @@ audio-forge/
 ├── tests/
 │   ├── test_aes.py          FIPS-197 官方向量、补位边界
 │   ├── test_ncm.py          现造 NCM fixture、跨分块边界、两种 key 布局、.part 原子写
+│   ├── test_qmc.py          官方黄金向量（static/map/rc4/TC-TEA）、尾部四形态、边界 0x7FFF
 │   ├── test_multipart.py    字段/文件/中文名/路径穿越/超大字段
 │   ├── test_guard.py        Basic/Bearer/限速/配额/磁盘清理（注入假时钟）+ 桶回收
 │   ├── test_jobs.py         进度表生命周期与淘汰策略
@@ -453,7 +474,7 @@ audio-forge/
 │   ├── test_cli.py          退出码、目录展开、probe/ncm 离线通道
 │   └── test_deploy.py       systemd 单元与 CLI 参数表不许漂移
 ├── docs/
-│   ├── FORMAT.md            NCM 容器格式逐字节说明 + 三十行参考实现
+│   ├── FORMAT.md            NCM 容器格式逐字节说明 + QMC 三种密码与尾部布局 + 参考实现
 │   └── DEPLOY.md            Docker / 反代 / 公网部署清单
 ├── deploy/
 │   ├── README.md            对外部署：鉴权模式 / 配额 / systemd / Nginx / 自检清单
@@ -525,8 +546,13 @@ audio-forge/
 | `wav` | `.wav` | pcm_s16le | 无压缩 | — |
 | `aiff` | `.aiff` | pcm_s16be | 无压缩 | — |
 
-输入侧不限：任何 ffmpeg 能解的都行（`.ncm` 额外走解密通道）。转码时保留原文件的
+输入侧不限：任何 ffmpeg 能解的都行（`.ncm` / QMC 家族额外走解密通道）。转码时保留原文件的
 元数据（`-map_metadata 0`），并丢弃视频流（`-vn`）。
+
+解密通道认这些后缀：`.ncm`、`.mflac` `.mflac0` `.mgg` `.mgg0` `.mgg1` `.mggl` `.mmp4`、
+`.qmc0` `.qmc2` `.qmc3` `.qmc4` `.qmc6` `.qmc8` `.qmcflac` `.qmcogg`、
+`.bkcmp3` `.bkcm4a` `.bkcflac` `.bkcwav` `.bkcape` `.bkcogg` `.bkcwma`、`.tkm`。
+（QMC 解出来的真实格式由码流嗅探决定，后缀只作为兜底提示。）
 
 ---
 
@@ -548,6 +574,31 @@ NCM 的音频段用 256 字节周期的 keystream 异或。逐字节 Python 循�
 
 分块大小必须是 256 的整数倍，否则第二块起相位错位、后半段全是噪音。代码里一旦出现
 短读就直接抛错，不允许带着错的相位继续写文件。
+
+### QMC 有三套密码，而且每套都有一个「只在特定密钥长度下才正确」的坑
+
+QMC 不是容器，是整文件流加密，按密钥长度分流：
+
+| 形态 | 触发条件 | 密码 | 结构 |
+| --- | --- | --- | --- |
+| v1 静态 | 尾部没有密钥 | 128 字节固定表异或 | `mask = box[(o*o+27) & 0xFF]`，`o` 超过 `0x7FFF` 才对 `0x7FFF` 取模 |
+| v2 Map | master key ≤ 300 字节 | 由 key 派生的掩码表 | `idx = (o*o+71214) % len(key)`，`mask = rot(key[idx], idx&7)` |
+| v2 RC4 | master key > 300 字节 | 变长 S 盒 RC4 | 首段 0x80 直接查 key；之后每 0x1400 一段，从 KSA 盒副本重启 PRGA 先丢 `skip` 个 |
+
+三个真踩过的坑，都属于「拿真样本也测不出来」那一类：
+
+1. **`0x7FFF` 这一个字节**：偏移 `0x7FFF` 用的是 `o = 0x7FFF` 本身，不是 `o = 0`。
+   错这一字节的症状是整个 ogg 只有一页 CRC 不对，其余 2700+ 页全对，听感上根本发现不了。
+2. **Map 不能先把 key 压成 128 字节**：压成 128 字节只在 `len(key)` 能整除 256 时等价
+   （128/256 恰好能整除，96/200/300 不能）。真实样本多为 128/256，所以这个错会一路绿灯，
+   直到遇见别的长度 —— 从偏移 128 起整首都是噪音。
+3. **RC4 的 skip 是 `idx % len(key)`，不是 `idx & 0x1FF`**：两者在 `len(key)` 为 2 的幂
+   （真实样本的 512）时完全等价，换 301/384/768 就全错。
+
+所以 `tests/test_qmc.py` 里的黄金向量**故意挑不能整除 / 不是 2 的幂的密钥长度**
+（map 用 96，rc4 用 384 与 301），再加上官方的 TC-TEA 测试向量。三条变异
+（把 `% n` 换回 `& 0x1FF`、把 map 索引换成 `%128`、把边界换成 `0x8000`）都能让用例变红 ——
+否则这些断言只是摆设。
 
 ### 上传不占内存，下载也是
 
@@ -578,9 +629,13 @@ NCM 的音频段用 256 字节周期的 keystream 异或。逐字节 Python 循�
 python -m unittest discover -s tests -t . -v
 ```
 
-**250 个用例**，全部用标准库 `unittest`，不需要安装 pytest：
+**324 个用例**，全部用标准库 `unittest`，不需要安装 pytest：
 
 - **AES**：FIPS-197 两组官方向量、加解密往返、S-box 单射性、PKCS#7 边界与宽松模式
+- **QMC**：`static / map / rc4` 三套密码各有一组**官方黄金向量**（sha256 覆盖 64 KiB
+  掩码流 + 边界点逐字节），密钥长度故意选 96 / 384 / 301 这类「不能整除、不是 2 的幂」
+  的值；TC-TEA 用 `tc_tea` crate 的官方向量；尾部四种形态（QTag / STag / musicex / PC 长度+key）
+  与长 key（>1280 字节）各有用例；另测 `--ekey` 手工密钥、错 key 必须报错、`.part` 清理
 - **NCM**：测试用的 `.ncm` 不是样本文件，而是按 `docs/FORMAT.md` 现场造出来的 ——
   用 `AES128ECB.encrypt` 生成 key/meta 块，用同一张 keystream 表异或回去。
   覆盖 4 MiB 分块边界、非 256 对齐的尾块、新旧两种 key 布局、封面长度重复/单写、
@@ -613,7 +668,7 @@ pip install -e ".[dev]"     # ruff + mypy + coverage，都写在 pyproject.toml 
 ruff check .                # E,F,W,I,UP,B,SIM；line-length 100
 mypy                        # check_untyped_defs，src 全量
 coverage run --source=src/audioforge -m unittest discover -s tests -t .
-coverage report -m          # 门限 80%（当前 84%）
+coverage report -m          # 门限 80%（当前 86%）
 pre-commit install          # 可选：提交前自动跑 ruff + unittest
 ```
 
@@ -684,12 +739,21 @@ audioforge serve --host 0.0.0.0 --token "$(python -c 'import secrets;print(secre
 - 容器内必须 `--host 0.0.0.0` 才能被端口映射访问，这是唯一需要放开的场景。
 - 上传文件名会剥掉目录部分、控制字符和 `<>:"/\|?*`，落盘路径再做一次 `resolve()` 校验。
 
-**关于 NCM 与版权**：`.ncm` 是网易云音乐的客户端加密容器，解密能力只应作用于
-**你自己合法拥有、且平台条款允许离线使用**的音频。本项目：
+**关于 NCM / QMC 与版权**：`.ncm`（网易云音乐）与 QMC（QQ 音乐）都是客户端加密格式。
+解密能力只应作用于**你自己合法拥有、且平台条款允许离线使用**的音频。本项目：
 
 - 只做容器剥离与格式转换，不联网、不上传任何文件到第三方、不包含任何内容分发功能；
-- 仓库不附带任何音频样本，测试 fixture 全部现场生成；
+- 仓库不附带任何音频样本，测试 fixture 全部现场生成（QMC 的黄金向量是掩码流的哈希，
+  不是音频）；
+- `STag` / `musicex` 尾部那批文件**不含密钥**，本项目不实现也不调用任何取密钥的接口，
+  只接受使用者自己提供的 `--ekey`；
 - 请勿用它批量下载、分发或二次销售受版权保护的音乐；由此产生的责任由使用者自负。
+
+⚠️ **DMCA 与合规风险（务必先看）**：上游参考实现 `unlock-music/unlock-music` 已在
+2022-11 因 QQ 音乐相关投诉被 GitHub **DMCA 下架**。规避技术措施在部分法域
+（如美国 DMCA §1201、中国《著作权法》的技术措施条款）即使对自购内容也可能构成违法。
+**把本仓库保持为私有、或只在你自己的机器上使用，是风险最低的做法**；
+若要公开发布，请自行评估所在地法律与平台政策，必要时先移除 QMC 通道。
 
 ---
 

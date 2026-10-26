@@ -147,7 +147,7 @@ journalctl -u audio-forge -f
 启动横幅会自己打印当前鉴权模式和配额：
 
 ```
-audio-forge 1.0.0  http://127.0.0.1:8000
+audio-forge 1.1.0  http://127.0.0.1:8000
   临时目录 : /var/lib/audio-forge/audioforge
   上传上限 : 200 MB
   通用转码 : ffmpeg version 7.1 ...

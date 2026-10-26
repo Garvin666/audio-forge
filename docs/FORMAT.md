@@ -1,4 +1,4 @@
-# NCM 容器格式说明
+# NCM / QMC 加密格式说明
 
 本文是 `src/audioforge/ncm.py` 的格式依据。所有结论都来自对**实测样本**的逐字节核对
 （两个 320 kbps / 48 kHz 立体声样本，约 9–10 MB），而不是从别处抄来的伪代码。
@@ -192,3 +192,81 @@ print(meta["musicName"], audio[:4].hex())
 | 输出文件为空或极短 | 封面长度字段被误读成音频长度 | 校验 `cover_len` 上界，异常则视为无封面 |
 | 扩展名是 .mp3 但实际是 flac | meta 的 `format` 字段不可信 | 解出音频头部 4 KB 再判定 |
 | Python 3.13 上 import cgi 失败 | 3.13 移除了 `cgi` 模块 | 本项目的 multipart 解析不依赖它 |
+
+---
+
+# QMC（QQ 音乐）
+
+NCM 那一套的前提是「有容器结构可切」，QMC 没有。**QMC 是对整个文件做流加密**：
+没有魔数、没有头部、没有长度字段，解完才知道里面是 flac 还是 mp3。所以流程只能是
+「先解 4 KiB → 嗅探 → 再决定」，密钥不对时表现为解出噪音而不是解析失败。
+
+## 8. 三种形态与四类尾部
+
+| 形态 | 后缀 | 密钥来源 | 能否离线解 |
+| --- | --- | --- | --- |
+| v1 静态 | `.qmc0` `.qmc3` `.qmcflac` `.qmcogg` `.qmc2` `.tkm` `.bkc*` | 128 字节固定表 | ✅ |
+| v2 内嵌 key | `.mflac` `.mgg` … 尾部是 `QTag` 或「长度+key」 | 尾部 base64 EKey | ✅ |
+| v2 无 key | 尾部是 `STag`（安卓）或 `musicex`（PC） | 服务器下发 | ❌ 只能 `--ekey` |
+
+尾部布局（注意字节序各不相同）：
+
+```
+QTag      [音频][ekey,song_id,extra2][u32 BIG-ENDIAN 长度 L]["QTag"]
+PC legacy [音频][base64 key][u32 LITTLE-ENDIAN 长度]
+musicex   [音频][176 B 元数据][u32 size=0xC0][u32 version=1]["musicex\0"]
+STag      [音频][payload][u32 BIG-ENDIAN 长度 L]["STag"]      # 无密钥
+```
+
+`musicex` 的定长字段：`+0x0C` media_mid（60 B UTF-16LE）、`+0x48` 资源文件名（100 B UTF-16LE）。
+
+## 9. EKey → master key
+
+```
+base64(ekey) ─┬─ 解码后以 "QQMusic EncV2,Key:" 开头 → 过两层固定密钥的 TC-TEA
+              │                                     再 base64 解码
+              └─ 否则直接是 EncV1 形态
+EncV1: header = 前 8 字节
+       tea_key[2i] = SIMPLE[i]，tea_key[2i+1] = header[i]
+       body = TC-TEA 解密（先去 pad(1) + salt(2)，再去尾部 7 个 0）
+SIMPLE = 69 56 46 38 2B 20 15 0B   # int(|tan(106+i/10)|*100) & 0xFF
+master = header + body
+```
+
+`len(master) <= 300` → Map；`> 300` → RC4（长度本身在暗示用哪套）。
+
+## 10. 三套密码
+
+```
+static: mask(offset) = box[(o*o + 27) & 0xFF]
+map:    idx = (o*o + 71214) % len(key); mask = rot(key[idx], (idx&7)+4)
+        o = offset if offset <= 0x7FFF else offset % 0x7FFF
+rc4:    前 0x80 字节：out[i] ^= key[segkey(offset+i) % n]
+        之后每 0x1400 一段：从 KSA 盒副本重启 PRGA，丢弃
+        ((offset % 0x1400) + segkey(seg_id)) % n 个输出后逐字节异或
+        segkey(id) = int(hash / ((id+1) * key[id % n]) * 100)
+```
+
+## 11. QMC 的已知坑
+
+| 现象 | 原因 | 处理 |
+| --- | --- | --- |
+| 整首歌只有一页 ogg CRC 不对 | 偏移 `0x7FFF` 用了 `% 0x7FFF`（得 0）而不是它自己 | 边界那一字节单独取 `o = 0x7FFF` |
+| 前 128 字节对、之后全是噪音 | 把 key 压成 128 字节再异或（只在 `len(key)` 整除 256 时等价） | 直接用原 key 建 0x8000 掩码表 |
+| 512 字节 key 的样本正常，换长度就废 | RC4 的 skip 写成 `& 0x1FF`（只在 2 的幂长度下等于 `% n`） | `segkey % n` |
+| QTag 文件被判成坏文件 | 第三段被当成「版本号必须等于 2」 | 它其实是 `rawMetaExtra2`，只要是个整数就收 |
+| 长 key 文件解出噪音却报成功 | PC 版 key 长度上限写死 1280，超了当「没有尾部」 | 上限取 `0xFFFF`（官方判据） |
+| `STag` / `musicex` 报密钥不对 | 这两类文件里根本没有密钥 | 明确报「需要 `--ekey`」，不要硬解 |
+
+## 12. 验证方法
+
+黄金向量不取自本仓库的实现，而取自上游 `unlock-music/cli` 的 Go 源码：
+
+- `cipher_static.go` / `cipher_map.go` / `cipher_rc4.go` 三套公式逐行转写为独立脚本，
+  与本仓实现对比 64 KiB 掩码流（sha256）与边界点；
+- TC-TEA 用 `tc_tea` crate 0.1.4 的官方向量（明文 `01..08` + key `12345678ABCDEFGH`
+  → 24 B 密文 `91 09 51 62 …`）；
+- 密钥长度**故意**取 96 / 384 / 301 这类「不能整除 256 / 不是 2 的幂」的值 ——
+  用 128/256/512 测等于没测；
+- 三条变异（`% n`→`& 0x1FF`、map 索引→`%128`、边界→`0x8000`）都必须让用例变红。
+

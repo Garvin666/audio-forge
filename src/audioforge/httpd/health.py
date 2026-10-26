@@ -22,7 +22,7 @@ import re
 import time
 from http import HTTPStatus
 
-from .. import __version__, transcode
+from .. import __version__, qmc, transcode
 
 __all__ = ["ping", "ready", "health", "job_status", "stats"]
 
@@ -61,8 +61,11 @@ def health(h) -> None:
             "ffmpeg": srv.ffmpeg_version,
             "capabilities": {
                 "ncm": True,
+                "qmc": True,
                 "transcode": bool(srv.ffmpeg),
             },
+            # 加密容器后缀由后端下发，前端不重抄这 17 个（.ncm + QMC 家族）
+            "encrypted_ext": [".ncm", *(f".{ext}" for ext in sorted(qmc.EXTENSIONS))],
             "formats": sorted(transcode.FORMATS),
             "limits": {
                 "max_upload_mb": round(cfg.max_bytes / (1 << 20)),

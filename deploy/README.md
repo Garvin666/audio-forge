@@ -139,6 +139,39 @@ test -z "$(systemd-analyze verify /etc/systemd/system/audio-forge.service 2>&1)"
 > `ExecStart` 里那 10 个 `--host/--port/--workdir/...` 是否都存在，得另外核
 > （`audioforge serve --help` 对一遍）。
 
+### 3.2 这个单元真的启动过（实测记录）
+
+不是「写完就交」，是在一个 systemd 257 当 PID 1 的 Debian 13 环境里按上面步骤 1–3 装好、
+真跑过的：
+
+| 项 | 实测结果 |
+| --- | --- |
+| `systemd-analyze verify` | **零输出**（真路径，非 bind-mount） |
+| `systemctl enable` 后重启 | 开机自启，`is-active=active` |
+| 进程属主 | `audioforge`（`User=` 生效） |
+| 监听 | 只 `127.0.0.1:8000`；非回环探测不可达（符合预期） |
+| `/api/ping` | 200（无凭证） |
+| `/api/health` | 401（无凭证）/ 200（带凭证） |
+| **`ProtectSystem=strict` 是否真只读** | 在服务自己的 mount namespace 里试写：`/var/lib/audio-forge` **成功**；`/etc`、`/usr` 均 `Read-only file system` |
+| 真实上传 | 10 MB `.ncm` → 9 841 292 B mp3，sha256 与真机直解**逐字节一致**，落盘属主 `audioforge` |
+| `Restart=on-failure` | `kill -9` 主进程 → 6 秒内换新 PID，`NRestarts=1`，探活恢复 200 |
+| `systemctl stop` | 干净退出，无残留进程 |
+
+**两个只有真启动才看得见的行为**（已写进单元文件注释）：
+
+1. **不加 `Environment=PYTHONUNBUFFERED=1`，`journalctl -u audio-forge` 里一行应用输出都没有**
+   —— 只有 systemd 自己的 `Started` / `Stopped` 四行。原因是 systemd 下 stdout 是管道，
+   Python 默认块缓冲，横幅和访问日志全卡在缓冲区；被 `SIGKILL` 时永久丢失。
+   Docker 路径看不出这个问题（Dockerfile 里设了同一个变量），所以**别拿 Docker 的日志表现推断 systemd**。
+2. **`EnvironmentFile` 指向不存在的文件时，服务不是「起来但没配置」，而是根本起不来**：
+
+   ```
+   Failed to load environment files: No such file or directory
+   Failed with result 'resources'.
+   ```
+
+   `systemctl start` 返回非 0，`is-active` 停在 `activating`。排查时按这条报错直接查 `/etc/audio-forge/env`。
+
 ---
 
 ## 4. Nginx 接入

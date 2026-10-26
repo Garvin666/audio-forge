@@ -69,6 +69,9 @@ ExecStart=/usr/local/bin/audioforge serve --port 8000 --workdir /var/tmp/audio-f
 Restart=on-failure
 NoNewPrivileges=yes
 PrivateTmp=yes
+# 这一行别省：systemd 下 stdout 是管道，Python 默认块缓冲，
+# 结果 journalctl 里看不到任何应用输出（连启动横幅都没有）。
+Environment=PYTHONUNBUFFERED=1
 
 [Install]
 WantedBy=multi-user.target
@@ -79,6 +82,10 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now audio-forge
 journalctl -u audio-forge -f
 ```
+
+> 上面是最小示例。带独立用户、`ProtectSystem=strict`、日配额与磁盘闸门的**加固版**在
+> [`deploy/audio-forge.service`](../deploy/audio-forge.service)，配套的安装、自检与实测数据见
+> [`deploy/README.md`](../deploy/README.md) §3。
 
 ### 开机自启（Windows）
 

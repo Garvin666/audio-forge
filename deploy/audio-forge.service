@@ -13,6 +13,11 @@ WorkingDirectory=/opt/audio-forge
 # 口令与令牌放这里，别写进命令行（ps 能看到）
 EnvironmentFile=/etc/audio-forge/env
 
+# 必须关掉 stdout 缓冲：systemd 下 stdout 是管道，Python 默认块缓冲，
+# 结果 journalctl -u audio-forge 里**一行应用输出都没有**（连启动横幅都收不到），
+# 排查时会以为服务没起来。Docker 路径没这问题是因为 Dockerfile 里设了同一个变量。
+Environment=PYTHONUNBUFFERED=1
+
 # 只监听回环，公网流量由 Nginx 转发进来
 ExecStart=/opt/audio-forge/venv/bin/audioforge serve \
     --host 127.0.0.1 \

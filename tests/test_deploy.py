@@ -128,6 +128,20 @@ class TestSystemdUnit(unittest.TestCase):
             self.assertNotIn(bad, cmdline, f"命令行里不应出现 {bad}，应走 EnvironmentFile")
         self.assertIn("EnvironmentFile=", self.text)
 
+    def test_stdout_unbuffered(self) -> None:
+        """必须关掉 stdout 缓冲，否则 journalctl 里一个字都看不到。
+
+        systemd 下 stdout 是管道，Python 默认块缓冲 ⇒ 启动横幅与访问日志全卡在缓冲区，
+        直到进程退出才刷（被 SIGKILL 则永久丢失）。实测：不加这行 `journalctl -u` 只有
+        systemd 自己的 Started/Stopped 四行，运维会以为服务没起来。
+        Docker 路径看不出来是因为 Dockerfile 里设了同一个变量。
+        """
+        self.assertIn(
+            "Environment=PYTHONUNBUFFERED=1",
+            self.text,
+            "缺 PYTHONUNBUFFERED=1：journalctl 里将看不到任何应用输出",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

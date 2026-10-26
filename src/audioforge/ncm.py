@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import BinaryIO
 
 from .aes import AES128ECB, pkcs7_unpad
+from .id3 import MAX_COVER_BYTES, build_tag, looks_tagged
 
 __all__ = ["NcmError", "NcmInfo", "probe", "decrypt", "guess_format", "keystream_table"]
 
@@ -71,6 +72,8 @@ class NcmInfo:
     raw_meta: dict = field(default_factory=dict)
     # 解出体积与元数据推算的对照（见 _size_check）：{} 表示元数据不足、无从判断
     size_check: dict = field(default_factory=dict)
+    # 是否在输出前面写了 ID3 标签（只有显式要、且输出是 mp3 时才可能为 True）
+    tagged: bool = False
 
     @property
     def size(self) -> int:
@@ -387,9 +390,14 @@ def decrypt(
     out_dir: str | Path | None = None,
     *,
     extract_cover: bool = False,
+    tags: bool = False,
     overwrite: bool = True,
 ) -> tuple[Path, NcmInfo]:
-    """解出原始音频，返回 (输出路径, 头部信息)。"""
+    """解出原始音频，返回 (输出路径, 头部信息)。
+
+    ``tags=True`` 会在 mp3 码流前面拼一个 ID3v2.3 标签（标题/艺人/专辑/封面）。
+    默认关闭：本工具的核心承诺是「逐字节还原码流」，加标签就改变了输出字节。
+    """
     src = Path(src)
     if not src.is_file():
         raise NcmError(f"文件不存在：{src}")
@@ -399,9 +407,12 @@ def decrypt(
         table = keystream_table(stream_key)
 
         # 用真实码流头校正 meta 里声明的格式，决定输出扩展名
-        real = guess_format(_peek_plain(fp, info, table))
+        head = _peek_plain(fp, info, table)
+        real = guess_format(head)
         if real:
             info.fmt = real
+
+        tag = _build_tag(fp, info, head) if tags else b""
 
         out_dir = Path(out_dir) if out_dir else src.parent
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -414,9 +425,12 @@ def decrypt(
         fp.seek(info.audio_offset)
         try:
             with tmp.open("wb") as dst:
+                if tag:
+                    dst.write(tag)
                 written = _xor_keystream(fp, dst, table, info.audio_size)
             info.audio_size = written
             info.size_check = _size_check(info, written)
+            info.tagged = bool(tag)
             if written == 0:
                 raise NcmError(f"解密后输出为空：{out}")
             # 先写 .part 再原子改名：中途失败不会在用户音乐目录里留半截文件
@@ -432,3 +446,24 @@ def decrypt(
             cover_path.write_bytes(fp.read(info.cover_size))
 
     return out, info
+
+
+def _build_tag(fp: BinaryIO, info: NcmInfo, head: bytes) -> bytes:
+    """按需读封面并拼 ID3 标签；不该写的场景一律返回空字节（不报错）。"""
+    if info.fmt != "mp3":
+        # flac 该写 Vorbis comment、wav 没有标签位 —— 往这些容器里塞 ID3 只会制造垃圾
+        return b""
+    if looks_tagged(head):
+        # 码流自带 ID3 头：再前置一个会出现「两台设备显示不同歌名」
+        return b""
+    cover = b""
+    if 0 < info.cover_size <= MAX_COVER_BYTES:
+        fp.seek(info.cover_offset)
+        cover = fp.read(info.cover_size)
+    return build_tag(
+        title=info.music_name,
+        artists=info.artists,
+        album=info.album,
+        cover=cover or None,
+        cover_ext=info.cover_ext,
+    )

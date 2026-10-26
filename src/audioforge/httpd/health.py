@@ -17,12 +17,14 @@ health 曾经每次请求都做三件重活：``find_ffmpeg()`` 扫 PATH、起�
 
 from __future__ import annotations
 
+import platform
 import re
+import time
 from http import HTTPStatus
 
 from .. import __version__, transcode
 
-__all__ = ["ping", "ready", "health", "job_status"]
+__all__ = ["ping", "ready", "health", "job_status", "stats"]
 
 _JOB_ID = re.compile(r"^[0-9a-fA-F]{8,64}$")
 
@@ -79,6 +81,41 @@ def health(h) -> None:
                 "usage": guard.usage(h._client_ip()),
                 "disk_mb": round(guard.disk_usage_mb(), 1),
             },
+        }
+    )
+
+
+def stats(h) -> None:
+    """运行指标（``GET /api/stats``）：给运维看，不是给探针看的。
+
+    全部取自内存里已有的计数（jobs 表、Guard 的桶与磁盘增量），不遍历目录、
+    不起子进程 —— 否则就成了 P1-1 修掉的那个毛病换了个入口。
+    """
+    srv = h.server
+    cfg = srv.cfg
+    guard = srv.guard
+    up = time.time() - getattr(srv, "started_at", time.time())
+    h._json(
+        {
+            "ok": True,
+            "version": __version__,
+            "uptime_s": round(max(0.0, up), 1),
+            "python": platform.python_version(),
+            "platform": platform.platform(),
+            "jobs": srv.jobs.counts(),
+            "ips": guard.bucket_count(),
+            "disk": {
+                "jobs_mb": round(guard.disk_usage_mb(), 1),
+                "limit_mb": cfg.limits.disk_mb,
+            },
+            "limits": {
+                "max_upload_mb": round(cfg.max_bytes / (1 << 20)),
+                "max_output_mb": cfg.max_out_mb,
+                "concurrency": cfg.concurrency,
+                "conn_timeout_s": cfg.conn_timeout,
+            },
+            "ffmpeg": {"found": bool(srv.ffmpeg), "version": srv.ffmpeg_version},
+            "auth": {"mode": guard.mode},
         }
     )
 

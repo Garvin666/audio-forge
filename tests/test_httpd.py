@@ -389,5 +389,122 @@ class LogRedactionCase(HttpMixin, unittest.TestCase):
         self.assertIn("token=***", log, log)
 
 
+class StatsCase(HttpMixin, unittest.TestCase):
+    """``GET /api/stats``：运维面板的数据面（全部取自内存计数）。"""
+
+    server_options = {"limits": Limits.unlimited()}
+
+    _KEYS = (
+        "ok",
+        "version",
+        "uptime_s",
+        "python",
+        "platform",
+        "jobs",
+        "ips",
+        "disk",
+        "limits",
+        "ffmpeg",
+        "auth",
+    )
+
+    def test_shape_and_no_store(self):
+        status, body, headers = self.get("/api/stats")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers.get("Cache-Control"), "no-store")
+        data = json.loads(body)
+        for key in self._KEYS:
+            self.assertIn(key, data)
+        self.assertTrue(data["ok"])
+        self.assertGreaterEqual(data["uptime_s"], 0.0)
+        self.assertRegex(data["python"], r"^\d+\.\d+\.\d+$")
+        self.assertIsInstance(data["ips"], int)
+        for key in ("tracked", "active", "done", "error"):
+            self.assertIn(key, data["jobs"])
+
+    def test_limits_mirror_config(self):
+        _, body, _ = self.get("/api/stats")
+        data = json.loads(body)
+        self.assertEqual(data["limits"]["max_upload_mb"], round(self.cfg.max_bytes / (1 << 20)))
+        self.assertEqual(data["limits"]["max_output_mb"], self.cfg.max_out_mb)
+        self.assertEqual(data["limits"]["concurrency"], self.cfg.concurrency)
+        self.assertEqual(data["limits"]["conn_timeout_s"], self.cfg.conn_timeout)
+        self.assertEqual(data["disk"]["limit_mb"], self.cfg.limits.disk_mb)
+        self.assertEqual(data["auth"]["mode"], "none")
+        self.assertEqual(data["ffmpeg"]["found"], bool(self.httpd.ffmpeg))
+
+    def test_jobs_counter_moves_after_upload(self):
+        _, before, _ = self.get("/api/stats")
+        base = json.loads(before)["jobs"]
+        status, payload = self.upload("s.ncm", build_ncm(fake_audio(2_000), meta=META))
+        self.assertEqual(status, 200, payload)
+        _, after, _ = self.get("/api/stats")
+        now = json.loads(after)["jobs"]
+        self.assertGreaterEqual(now["tracked"], base["tracked"] + 1)
+        self.assertGreaterEqual(now["done"], base["done"] + 1)
+
+
+class StatsAuthCase(HttpMixin, unittest.TestCase):
+    """``/api/stats`` 不在公开名单里：开了鉴权就必须带凭证（它会吐平台路径）。"""
+
+    server_options = {"limits": Limits.unlimited(), "access_token": "stats-tok"}
+
+    def test_requires_token(self):
+        status, body, headers = self.get("/api/stats")
+        self.assertEqual(status, 401)
+        self.assertFalse(json.loads(body)["ok"])
+        # 只配 access_token 时不发 Basic 挑战头（发了浏览器会弹原生登录框）
+        self.assertNotIn("WWW-Authenticate", headers)
+
+    def test_accepts_bearer(self):
+        status, _, _ = self.get("/api/stats", {"Authorization": "Bearer stats-tok"})
+        self.assertEqual(status, 200)
+
+
+class TagsCase(HttpMixin, unittest.TestCase):
+    """``tags=1`` 端到端：multipart → ncm 解密 → 下载到的字节里真的带 ID3。"""
+
+    server_options = {"limits": Limits.unlimited()}
+
+    def _convert(self, extra: dict) -> tuple[int, dict]:
+        blob = build_ncm(fake_audio(3_000), meta=META)
+        fields = {"target": "auto", **extra}
+        return self.post("/api/convert", multipart([("song.ncm", blob)], fields))
+
+    def test_off_by_default(self):
+        status, data = self._convert({})
+        self.assertEqual(status, 200, data)
+        item = data["results"][0]
+        self.assertTrue(item["ok"], item)
+        self.assertNotIn("ID3", item["note"])
+        _, body, _ = self.get(item["url"])
+        self.assertFalse(body.startswith(b"ID3"))
+        self.assertEqual(body, fake_audio(3_000))
+
+    def test_prepends_id3_when_asked(self):
+        status, data = self._convert({"tags": "1"})
+        self.assertEqual(status, 200, data)
+        item = data["results"][0]
+        self.assertTrue(item["ok"], item)
+        self.assertIn("ID3", item["note"])
+        _, body, _ = self.get(item["url"])
+        self.assertTrue(body.startswith(b"ID3"))
+        self.assertIn(b"TIT2", body)
+        # 标签之后仍是逐字节相同的码流
+        self.assertTrue(body.endswith(fake_audio(3_000)))
+
+    def test_accepts_browser_checkbox_values(self):
+        for raw in ("1", "on", "true", "yes", "ON"):
+            status, data = self._convert({"tags": raw})
+            self.assertEqual(status, 200, data)
+            self.assertIn("ID3", data["results"][0]["note"], raw)
+
+    def test_falsey_values_are_off(self):
+        for raw in ("0", "off", "false", "", "no"):
+            status, data = self._convert({"tags": raw})
+            self.assertEqual(status, 200, data)
+            self.assertNotIn("ID3", data["results"][0]["note"], raw)
+
+
 if __name__ == "__main__":
     unittest.main()

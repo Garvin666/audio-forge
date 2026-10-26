@@ -5,7 +5,7 @@
   const $ = (id) => document.getElementById(id);
   const el = {
     drop: $('drop'), picker: $('picker'), files: $('files'),
-    target: $('target'), quality: $('quality'),
+    target: $('target'), quality: $('quality'), tags: $('tags'),
     go: $('go'), clear: $('clear'), cancel: $('cancel'),
     bar: $('bar'), msg: $('msg'),
     panel: $('panel'), list: $('list'), ttl: $('ttl'),
@@ -252,6 +252,7 @@
     sent.forEach((f) => fd.append('files', f, f.name));
     fd.append('target', el.target.value);
     fd.append('quality', el.quality.value);
+    if (el.tags && el.tags.checked) fd.append('tags', '1');
     fd.append('job', jobId);
 
     state.busy = true;

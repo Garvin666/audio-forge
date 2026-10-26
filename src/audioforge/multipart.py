@@ -31,6 +31,13 @@ __all__ = [
 
 _COPY_BLOCK = 1 << 20
 _UNSAFE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+# Windows 保留设备名：带任何扩展名同样不可用（CON.txt 与 CON 是同一个设备），
+# 且大小写不敏感。落盘名命中这些前缀时，Windows 上会直接失败或指向设备。
+_WIN_RESERVED = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{i}" for i in range(1, 10)}
+    | {f"LPT{i}" for i in range(1, 10)}
+)
 
 
 class MultipartError(ValueError):
@@ -65,14 +72,27 @@ def get_boundary(content_type: str) -> bytes:
 
 
 def sanitize_filename(name: str, fallback: str = "upload") -> str:
-    """把客户端给的文件名收成安全的单段文件名（去目录、去控制字符、限长）。"""
+    """把客户端给的文件名收成安全的单段文件名（去目录、去控制字符、限长）。
+
+    除路径穿越与控制字符，这里还要处理两个 Windows 独有的静默坑：
+
+    * **尾点 / 尾空格会被文件系统吃掉**：``a.mp3 `` 落到 NTFS 上就是 ``a.mp3``，
+      与同批真正叫 ``a.mp3`` 的文件撞名，去重逻辑（``dest.exists()``）看不到冲突。
+    * **保留设备名**：``CON`` / ``NUL`` / ``COM1`` … 带扩展名一样是设备名，
+      写入行为未定义，命中时前缀一个下划线绕开。
+    """
     name = (name or "").replace("\\", "/").split("/")[-1]
     name = _UNSAFE.sub("_", name).strip().strip(".")
     if not name:
         return fallback
     stem, ext = os.path.splitext(name)
+    stem = stem.rstrip(" .")
     if len(stem) > 100:
-        stem = stem[:100]
+        stem = stem[:100].rstrip(" .")
+    if not stem:
+        return fallback
+    if stem.split(".")[0].upper() in _WIN_RESERVED:
+        stem = "_" + stem
     return f"{stem}{ext[:16]}"
 
 
@@ -120,6 +140,10 @@ def parse_multipart(
     """解析落在磁盘上的请求体，返回 part 列表。
 
     文件 part 的内容会被写到 ``dest_dir`` 下，``Part.path`` 指向落盘文件。
+
+    请求体必须以收尾分隔符 ``--boundary--`` 结束；缺了它一律按「被截断」处理并抛
+    ``MultipartError``（见循环里 ``nxt < 0`` 那段）。多个 part 里只要出现字段超限，
+    也整体失败 —— 与「宁可 4xx 也不产半份结果」的取舍一致。
     """
     spool_path = Path(spool_path)
     dest_dir = Path(dest_dir)
@@ -148,16 +172,20 @@ def parse_multipart(
                     cursor += 2
 
                 nxt = mm.find(sep, cursor)
-                is_last = nxt < 0
-                end = size if is_last else nxt
+                if nxt < 0:
+                    # 正常请求一定以 `--boundary--` 收尾；找不到下一个分隔符，
+                    # 只可能是请求体被截断（连接中断、代理截长度、客户端算错
+                    # Content-Length）。此时绝不能把剩下的字节当成最后一个 part
+                    # 落盘 —— 那会静默产出一个「能过、但内容是残缺的」文件，
+                    # 比直接报错难查得多。
+                    raise MultipartError(
+                        "请求体缺少收尾 boundary（上传被截断，或 Content-Length 与实际不符）"
+                    )
 
-                part = _read_part(mm, fp, cursor, end, dest_dir, index, max_field_bytes)
+                part = _read_part(mm, fp, cursor, nxt, dest_dir, index, max_field_bytes)
                 if part is not None:
                     parts.append(part)
                     index += 1
-
-                if is_last:
-                    break
                 cursor = nxt + len(sep)
         finally:
             mm.close()

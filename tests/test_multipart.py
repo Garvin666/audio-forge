@@ -73,6 +73,30 @@ class TestSanitize(unittest.TestCase):
         self.assertTrue(out.endswith(".mp3"))
         self.assertLessEqual(len(out), 120)
 
+    def test_windows_reserved_names_prefixed(self):
+        # 带扩展名一样是设备名，必须换掉；大小写不敏感
+        self.assertEqual(sanitize_filename("CON.mp3"), "_CON.mp3")
+        self.assertEqual(sanitize_filename("nul"), "_nul")
+        self.assertEqual(sanitize_filename("Aux.tar.gz"), "_Aux.tar.gz")
+        self.assertEqual(sanitize_filename("COM1.ncm"), "_COM1.ncm")
+        self.assertEqual(sanitize_filename("lpt9"), "_lpt9")
+
+    def test_reserved_lookalikes_untouched(self):
+        # 只有「第一个点之前」是整个设备名才算保留名
+        self.assertEqual(sanitize_filename("CONSOLE.mp3"), "CONSOLE.mp3")
+        self.assertEqual(sanitize_filename("nulify.mp3"), "nulify.mp3")
+        self.assertEqual(sanitize_filename("COM10.mp3"), "COM10.mp3")
+
+    def test_trailing_space_and_dot_inside_stem_stripped(self):
+        # NTFS 会静默吃掉尾点/尾空格，落盘名与预期不符（还会与同批文件撞名）
+        self.assertEqual(sanitize_filename("a .mp3"), "a.mp3")
+        self.assertEqual(sanitize_filename("a   "), "a")
+        self.assertEqual(sanitize_filename("song.mp3."), "song.mp3")
+        self.assertEqual(sanitize_filename("a . "), "a")
+
+    def test_only_dots_and_spaces_falls_back(self):
+        self.assertEqual(sanitize_filename(" . . ", fallback="up"), "up")
+
 
 class TestParse(unittest.TestCase):
     def setUp(self):
@@ -166,6 +190,28 @@ class TestParse(unittest.TestCase):
         self.spool.write_bytes(body)
         with self.assertRaises(MultipartError):
             parse_multipart(self.spool, BOUNDARY, self.dest, max_field_bytes=100)
+
+    def test_missing_closing_boundary_rejected(self):
+        # 只有分隔符、没有收尾的 --boundary--：典型的上传被截断
+        self.spool.write_bytes(build_body([{"name": "f", "data": b"v"}], closing=False))
+        with self.assertRaises(MultipartError) as ctx:
+            parse_multipart(self.spool, BOUNDARY, self.dest)
+        self.assertIn("收尾", str(ctx.exception))
+
+    def test_truncated_last_part_rejected(self):
+        # 最后一个文件 part 只发了一半：绝不能把半份内容落盘当成成功
+        body = build_body([{"name": "files", "filename": "half.mp3", "data": b"A" * 4096}])
+        self.spool.write_bytes(body[: body.rindex(b"\r\n--" + BOUNDARY)])
+        with self.assertRaises(MultipartError):
+            parse_multipart(self.spool, BOUNDARY, self.dest)
+        self.assertEqual(list(self.dest.iterdir()), [])
+
+    def test_missing_final_crlf_still_valid(self):
+        # 收尾标记后面不带 CRLF 是允许的（RFC 2046 的 epilogue 可以没有）
+        body = build_body([{"name": "files", "filename": "a.mp3", "data": b"A" * 10}])
+        self.spool.write_bytes(body.rstrip(b"\r\n"))
+        parts = parse_multipart(self.spool, BOUNDARY, self.dest)
+        self.assertEqual(parts[0].size, 10)
 
 
 if __name__ == "__main__":

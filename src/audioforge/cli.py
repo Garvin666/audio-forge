@@ -80,8 +80,10 @@ def cmd_ncm(args: argparse.Namespace) -> int:
     for src in targets:
         out_dir = Path(args.outdir) if args.outdir else src.parent
         try:
-            path, info = ncm.decrypt(src, out_dir, extract_cover=args.cover)
+            path, info = ncm.decrypt(src, out_dir, extract_cover=args.cover, tags=args.tags)
             line = f"[OK] {path.name}  {_fmt_size(path.stat().st_size)}  {info.fmt.upper()}"
+            if info.tagged:
+                line += "  +ID3"
             if info.music_name:
                 who = " / ".join(info.artists) or "未知艺人"
                 line += f"  {info.music_name} — {who}"
@@ -288,6 +290,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("-o", "--outdir", default=None, **common_out)
     p.add_argument("-r", "--recursive", action="store_true", help="递归子目录")
     p.add_argument("--cover", action="store_true", help="同时导出内嵌封面")
+    p.add_argument(
+        "--tags",
+        action="store_true",
+        help="给解出的 mp3 写 ID3 标签（标题/艺人/专辑/封面）；默认不写，保持码流逐字节还原",
+    )
     p.add_argument("--to", default=None, help="解出后再转成该格式（如 wav/mp3/flac）")
     p.add_argument("--quality", default="high", choices=transcode.QUALITY_NAMES)
     p.add_argument("--bitrate", default=None, help="覆盖码率，如 320k")

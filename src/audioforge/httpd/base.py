@@ -284,6 +284,8 @@ class BaseHandler(BaseHTTPRequestHandler):
                 self._send(HTTPStatus.NO_CONTENT, b"", "image/x-icon")
             elif route == "/api/health":
                 health.health(self)
+            elif route == "/api/stats":
+                health.stats(self)
             elif route.startswith("/api/job/"):
                 health.job_status(self, route)
             elif route.startswith("/api/file/"):

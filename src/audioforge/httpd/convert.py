@@ -93,12 +93,16 @@ def handle(h) -> None:
         target = (fields.get("target") or "auto").strip().lower()
         quality = (fields.get("quality") or "high").strip().lower()
         bitrate = (fields.get("bitrate") or "").strip() or None
+        # 表单勾选框：浏览器传 "on"，也接受 1/true/yes
+        want_tags = (fields.get("tags") or "").strip().lower() in ("1", "true", "on", "yes")
 
         jobs.phase(job_key, "converting")
         with h.server.slots:
             results = []
             for part in files:
-                result = _convert_one(h, part, out_dir, target, quality, bitrate, token)
+                result = _convert_one(
+                    h, part, out_dir, target, quality, bitrate, token, tags=want_tags
+                )
                 results.append(result)
                 jobs.add(job_key, result)
 
@@ -139,7 +143,15 @@ def _spool(h, path: Path, total: int) -> None:
 
 
 def _convert_one(
-    h, part, out_dir: Path, target: str, quality: str, bitrate: str | None, token: str
+    h,
+    part,
+    out_dir: Path,
+    target: str,
+    quality: str,
+    bitrate: str | None,
+    token: str,
+    *,
+    tags: bool = False,
 ) -> dict:
     src: Path = part.path
     name = part.filename or src.name
@@ -148,9 +160,11 @@ def _convert_one(
     cap = h.server.cfg.max_out_bytes
     try:
         if ext == ".ncm":
-            decoded, info = ncm.decrypt(src, out_dir, extract_cover=False)
+            decoded, info = ncm.decrypt(src, out_dir, extract_cover=False, tags=tags)
             produced = decoded
             note = f"NCM 解密（{info.fmt}，码率 {info.bitrate or '未知'}）"
+            if info.tagged:
+                note += "，含 ID3 标签"
             warn = _size_warning(info)
             want = target if target not in ("auto", "", info.fmt) else ""
             if want:

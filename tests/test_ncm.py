@@ -313,5 +313,85 @@ class TestGuessFormat(unittest.TestCase):
         self.assertIsNone(guess_format(b"\x00\x01\x02\x03"))
 
 
+def _tag_length(data: bytes) -> int:
+    """从 ID3 头读整段标签长度（含 10 字节头）。"""
+    raw = data[6:10]
+    return 10 + ((raw[0] << 21) | (raw[1] << 14) | (raw[2] << 7) | raw[3])
+
+
+class TestTagWrite(unittest.TestCase):
+    """``--tags`` / ``tags=1`` 的 ID3 回写：默认不动字节，开了只前置、不改码流。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name)
+
+    def _ncm(self, audio: bytes, **kw) -> Path:
+        p = self.dir / "song.ncm"
+        p.write_bytes(build_ncm(audio, meta=kw.pop("meta", META), **kw))
+        return p
+
+    def test_off_by_default(self):
+        p = self._ncm(fake_audio(4000))
+        out, info = decrypt(p, self.dir / "a")
+        self.assertFalse(info.tagged)
+        self.assertFalse(out.read_bytes().startswith(b"ID3"))
+
+    def test_prepend_only_stream_unchanged(self):
+        audio = fake_audio(4000)
+        p = self._ncm(audio)
+        plain, info_plain = decrypt(p, self.dir / "a")
+        tagged, info_tagged = decrypt(p, self.dir / "b", tags=True)
+
+        raw_plain = plain.read_bytes()
+        raw_tagged = tagged.read_bytes()
+        self.assertFalse(info_plain.tagged)
+        self.assertTrue(info_tagged.tagged)
+        self.assertTrue(raw_tagged.startswith(b"ID3"))
+        # 标签之后必须是与不加标签时逐字节相同的码流
+        self.assertEqual(raw_tagged[_tag_length(raw_tagged) :], raw_plain)
+        # audio_size 记的仍是音频字节数，不含标签
+        self.assertEqual(info_tagged.audio_size, len(raw_plain))
+
+    def test_frames_carry_metadata(self):
+        p = self._ncm(fake_audio(4000))
+        out, _ = decrypt(p, self.dir / "a", tags=True)
+        tag = out.read_bytes()[: _tag_length(out.read_bytes())]
+        self.assertIn("TIT2".encode("ascii"), tag)
+        # 中文标题以 UTF-16LE 落进帧里
+        self.assertIn(META["musicName"].encode("utf-16-le"), tag)
+        self.assertIn(META["album"].encode("utf-16-le"), tag)
+
+    def test_cover_embedded(self):
+        p = self._ncm(fake_audio(4000), cover=JPEG)
+        out, _ = decrypt(p, self.dir / "a", tags=True)
+        head = out.read_bytes()[: _tag_length(out.read_bytes())]
+        self.assertIn(b"APIC", head)
+        self.assertIn(b"image/jpeg", head)
+        self.assertTrue(head.endswith(JPEG), "封面原始字节应原样进 APIC")
+
+    def test_flac_output_not_tagged(self):
+        p = self._ncm(b"fLaC" + b"\x00" * 200)
+        out, info = decrypt(p, self.dir / "a", tags=True)
+        self.assertEqual(info.fmt, "flac")
+        self.assertFalse(info.tagged, "flac 不该写 ID3（该用 Vorbis comment）")
+        self.assertFalse(out.read_bytes().startswith(b"ID3"))
+
+    def test_existing_id3_not_duplicated(self):
+        audio = b"ID3\x03\x00\x00\x00\x00\x00\x00" + b"\x00" * 100
+        p = self._ncm(audio)
+        out, info = decrypt(p, self.dir / "a", tags=True)
+        raw = out.read_bytes()
+        self.assertFalse(info.tagged, "码流自带 ID3 头时不该再前置一个")
+        self.assertEqual(raw, audio, "应该原样还原，连长度都不变")
+
+    def test_no_metadata_writes_nothing(self):
+        p = self._ncm(fake_audio(4000), meta=None)
+        out, info = decrypt(p, self.dir / "a", tags=True)
+        self.assertFalse(info.tagged, "元数据为空时没有帧可写")
+        self.assertFalse(out.read_bytes().startswith(b"ID3"))
+
+
 if __name__ == "__main__":
     unittest.main()

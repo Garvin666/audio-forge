@@ -236,6 +236,24 @@ h1 {
   outline-offset: 1px;
 }
 
+/* 勾选项：同一行里的「复选框 + 说明」，用 padding 与左侧两个 select 对齐 */
+.field.check {
+  flex-direction: row;
+  align-items: center;
+  gap: 7px;
+  flex: 0 1 auto;
+  padding-top: 19px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.field.check input {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
 /* ---------- 按钮 ---------- */
 
 .actions {

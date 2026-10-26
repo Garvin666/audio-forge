@@ -98,6 +98,21 @@ class JobRegistry:
         with self._lock:
             return len(self._items)
 
+    def counts(self) -> dict[str, int]:
+        """按状态数一遍（``/api/stats`` 用）。
+
+        只读内存里的表，不碰磁盘；条目数上限就是 ``limit``（默认 1000），
+        所以这里 O(n) 也不会成为热点路径。
+        """
+        with self._lock:
+            items = list(self._items.values())
+        return {
+            "tracked": len(items),
+            "active": sum(1 for it in items if it["finished_at"] is None),
+            "done": sum(1 for it in items if it["phase"] == "done"),
+            "error": sum(1 for it in items if it["phase"] == "error"),
+        }
+
     # ---------------------------------------------------------------- #
 
     def _prune_locked(self, now: float) -> None:

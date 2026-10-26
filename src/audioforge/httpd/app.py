@@ -41,6 +41,7 @@ class AppServer(ThreadingHTTPServer):
         self.cfg = cfg
         self.guard = guard
         self.web_dir = WEB_DIR
+        self.started_at = time.time()  # /api/stats 的 uptime 基准
         self.slots = threading.Semaphore(max(1, cfg.concurrency))
         self.dl_slots = threading.Semaphore(cfg.slots_for_download)
         self.jobs = JobRegistry()

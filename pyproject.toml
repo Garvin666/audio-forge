@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "audio-forge"
+version = "1.0.0"
+description = "NCM 容器解密 + 通用音频格式转换，附零依赖本地 Web 上传平台"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Garvin666" }]
+keywords = ["ncm", "audio", "converter", "transcode", "ffmpeg", "music"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Web Environment",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Sound/Audio :: Conversion",
+]
+# 运行时零第三方依赖：AES/keystream 自己实现，HTTP 服务用标准库。
+dependencies = []
+
+[project.scripts]
+audioforge = "audioforge.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/Garvin666/audio-forge"
+Source = "https://github.com/Garvin666/audio-forge"
+Issues = "https://github.com/Garvin666/audio-forge/issues"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+audioforge = ["web/*.html", "web/*.js", "web/*.css"]

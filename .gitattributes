@@ -1,0 +1,9 @@
+# 统一用 LF：Dockerfile、CI 脚本、Python 在 CRLF 下都可能出问题
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.whl binary

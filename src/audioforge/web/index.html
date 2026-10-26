@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>audio-forge · 音乐格式转换</title>
+<link rel="stylesheet" href="/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>♫</text></svg>">
+</head>
+<body>
+<main class="page">
+
+  <header class="head">
+    <div class="title">
+      <h1>audio-forge</h1>
+      <p class="sub">NCM 解密 · 通用音频格式转换 · 全程在本机完成</p>
+    </div>
+    <div id="status" class="badge badge-wait">探测能力…</div>
+  </header>
+
+  <section class="card">
+    <div id="drop" class="drop" tabindex="0" role="button" aria-label="选择或拖入音频文件">
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M4 15v3.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+      </svg>
+      <p class="drop-main"><strong>拖入音频文件</strong>，或<span class="link">点击选择</span></p>
+      <p class="hint">.ncm · .mp3 · .flac · .wav · .m4a · .ogg · .opus · .aiff · .aac</p>
+      <input id="picker" type="file" multiple hidden>
+    </div>
+
+    <ul id="files" class="files"></ul>
+
+    <div class="opts">
+      <label class="field">
+        <span>目标格式</span>
+        <select id="target">
+          <option value="auto">自动（NCM 解出原格式）</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>质量</span>
+        <select id="quality">
+          <option value="high" selected>高</option>
+          <option value="medium">中</option>
+          <option value="low">低</option>
+        </select>
+      </label>
+    </div>
+
+    <div class="actions">
+      <button id="go" class="primary" disabled>开始转换</button>
+      <button id="clear" class="ghost" disabled>清空</button>
+    </div>
+
+    <div id="bar" class="bar" hidden><i></i></div>
+    <p id="msg" class="msg" hidden></p>
+  </section>
+
+  <section id="panel" class="card" hidden>
+    <h2>结果</h2>
+    <ul id="list" class="results"></ul>
+    <p class="tip">链接在服务器保留 <span id="ttl">60</span> 分钟；转换结果请及时下载。</p>
+  </section>
+
+  <footer class="foot">
+    <span id="ffnote">—</span>
+    <span>本工具不联网、不上传第三方；请仅转换你有权使用的音频。</span>
+  </footer>
+</main>
+<script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,34 @@
+# audio-forge 依赖说明
+#
+# ── 运行本项目需要什么 ──────────────────────────────────────────────
+#
+# 1) Python >= 3.9                    —— 唯一的运行时前置条件
+# 2) (可选) ffmpeg                     —— 只有「通用格式互转」通道需要
+#
+# 本文件故意留空：audio-forge 没有任何 Python 第三方依赖。
+#
+#   * AES-128-ECB、PKCS#7、RC4 变体 keystream 全部在 src/audioforge/aes.py
+#     和 src/audioforge/ncm.py 里手写实现，不用 pycryptodome / cryptography
+#   * HTTP 服务用标准库 http.server，multipart 解析用 mmap 手写
+#     （Python 3.13 起标准库移除了 cgi 模块，所以不能依赖它）
+#   * 前端是原生 HTML/CSS/JS，不引 CDN、不做构建
+#
+# ── 如果你坚持用 pip 管理依赖 ──────────────────────────────────────
+#
+#   pip install .            # 装成本地包，得到 audioforge 命令
+#   pip install -e .         # 开发模式（改了源码立即生效）
+#
+# 二者都不会下载任何第三方包。
+#
+# ── ffmpeg 怎么装 ────────────────────────────────────────────────
+#
+#   Windows : winget install Gyan.FFmpeg     或 scoop install ffmpeg
+#   macOS   : brew install ffmpeg
+#   Debian  : sudo apt install ffmpeg
+#   Docker  : 见 Dockerfile（镜像里已经装好）
+#
+# 装完确认：  ffmpeg -version
+# 找不到或想指定别的版本：设置环境变量 AUDIOFORGE_FFMPEG=/绝对路径/ffmpeg
+#
+# 没有 ffmpeg 时：NCM 解密通道照常工作（输出原始 mp3/flac），
+#                 通用转码接口会在 /api/health 里报告 transcode=false。

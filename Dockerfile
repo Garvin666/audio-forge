@@ -36,7 +36,7 @@
 # 两个架构各钉一个哈希（amd64 / arm64），TARGETARCH 由 BuildKit 按 `--platform`
 # 或宿主架构自动填；用老构建器时它为空，退回默认 amd64。
 # 升级方式：本地下载新包 → sha256sum → 改下面 case 里的两行。
-FROM alpine:3.22 AS ffmpeg-src
+FROM alpine:3.24 AS ffmpeg-src
 
 ARG APK_MIRROR=
 # 想用别的包（其它架构 / 自建精简版）：同时传 FFMPEG_URL 与 FFMPEG_SHA256
